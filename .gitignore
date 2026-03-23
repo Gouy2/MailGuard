@@ -1,0 +1,29 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Environment variables
+.env
+config.json
+*_config.json
+
+# OS
+nul
+
+# Project notes (local only)
+NOTES.md
+todolist.md
+
+# Server data
+server/data/
+server/logs/
+
+# claude
+.claude/
