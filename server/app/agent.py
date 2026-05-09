@@ -134,6 +134,11 @@ class AgentRuntime:
                     "result": result,
                 },
             )
+            self.tracer.finish_turn(
+                pending["trace_id"],
+                status="ok" if result.get("ok") else "error",
+                tool_calls=1,
+            )
         return result
 
     def reject_tool(self, pending_tool_call_id: str) -> dict[str, Any]:
@@ -150,6 +155,7 @@ class AgentRuntime:
                     "result": result,
                 },
             )
+            self.tracer.finish_turn(trace_id, status="rejected", tool_calls=1)
         return result
 
     def execute_tool(
@@ -159,21 +165,36 @@ class AgentRuntime:
         session_id: str = "default",
         trace_id: str | None = None,
     ) -> dict[str, Any]:
+        created_trace = trace_id is None
+        if trace_id is None:
+            trace_id = self.tracer.start_turn(
+                session_id,
+                "tool",
+                f"manual tool execution: {name}",
+            )
+
         context = ToolContext(
             session_id=session_id,
             memory_store=self.memory_store,
             trace_id=trace_id,
         )
         result = self.tool_registry.execute(name, arguments, context)
-        if trace_id:
-            self.tracer.log_event(
+        self.tracer.log_event(
+            trace_id,
+            "tool_result",
+            {
+                "tool": name,
+                "arguments": arguments,
+                "result": result,
+            },
+        )
+        if created_trace and not result.get("requires_approval"):
+            self.tracer.finish_turn(
                 trace_id,
-                "tool_result",
-                {
-                    "tool": name,
-                    "result": result,
-                },
+                status="ok" if result.get("ok") else "error",
+                tool_calls=1,
             )
+        result["trace_id"] = trace_id
         return result
 
     def execute_tool_for_test(

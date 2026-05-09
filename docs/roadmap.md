@@ -50,7 +50,8 @@
 - 已完成 dangerous tool pending approval
 - 已完成 trace 查询 API
 - 已完成 Windows 客户端命令入口接入 pending approval 和 trace 摘要
-- 下一步：把工具调用状态做成更自然的窗口 UI，并补 shell command allowlist / denylist
+- 当前进行中：shell command allowlist / denylist，以及手动工具执行返回 trace_id
+- 下一步：把工具调用状态做成更自然的窗口 UI
 
 ## Phase 2 - RAG / Memory
 

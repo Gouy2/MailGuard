@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import shlex
 import subprocess
 import time
 import uuid
@@ -16,6 +18,53 @@ from .memory import MemoryStore
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 MAX_TOOL_RESULT_CHARS = 12000
+SHELL_ALLOWED_COMMANDS = {
+    "cat",
+    "dir",
+    "findstr",
+    "git",
+    "ls",
+    "more",
+    "pwd",
+    "python",
+    "python3",
+    "type",
+    "uv",
+    "where",
+    "whoami",
+}
+SHELL_DENIED_COMMANDS = {
+    "attrib",
+    "chmod",
+    "chown",
+    "copy",
+    "cp",
+    "del",
+    "erase",
+    "format",
+    "kill",
+    "move",
+    "mv",
+    "rd",
+    "reg",
+    "ren",
+    "rename",
+    "rm",
+    "rmdir",
+    "shutdown",
+    "sudo",
+    "takeown",
+    "taskkill",
+}
+SHELL_DENIED_PATTERNS = (
+    re.compile(r"\brm\s+-[^\n]*r", re.IGNORECASE),
+    re.compile(r"\bdel\s+(/[sq]|-[^\n]*r)", re.IGNORECASE),
+    re.compile(r"\brmdir\s+(/[sq]|-[^\n]*r)", re.IGNORECASE),
+    re.compile(r"\bformat\b", re.IGNORECASE),
+    re.compile(r"\bshutdown\b", re.IGNORECASE),
+    re.compile(r"\bsudo\b", re.IGNORECASE),
+    re.compile(r"\btaskkill\b", re.IGNORECASE),
+)
 
 
 class ToolPermission(StrEnum):
@@ -119,6 +168,15 @@ class ToolRegistry:
                 "error_type": "validation_error",
             }
 
+        policy_error = self._policy_check(tool, arguments)
+        if policy_error:
+            return {
+                "ok": False,
+                "tool": name,
+                "error": policy_error,
+                "error_type": "policy_error",
+            }
+
         if tool.permission == ToolPermission.DANGEROUS and approval != "approved":
             pending = PendingToolCall(
                 id=uuid.uuid4().hex,
@@ -216,6 +274,12 @@ class ToolRegistry:
 
         return None
 
+    def _policy_check(self, tool: ToolSpec, arguments: dict[str, Any]) -> str | None:
+        if tool.name == "run_shell_command":
+            command = str(arguments.get("command", ""))
+            return _shell_policy_error(command)
+        return None
+
 
 def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
     schema: dict[str, Any] = {
@@ -261,6 +325,34 @@ def _normalize_relative_path(path: str, workspace_root: Path) -> Path:
     if workspace_root not in candidate.parents and candidate != workspace_root:
         raise ValueError("path must stay within workspace_root")
     return candidate
+
+
+def _shell_policy_error(command: str) -> str | None:
+    command = command.strip()
+    if not command:
+        return "command is required"
+
+    for pattern in SHELL_DENIED_PATTERNS:
+        if pattern.search(command):
+            return "command matches denied high-risk pattern"
+
+    try:
+        parts = shlex.split(command, posix=False)
+    except ValueError as exc:
+        return f"command parse error: {exc}"
+
+    if not parts:
+        return "command is required"
+
+    executable = Path(parts[0].strip("\"'")).name.lower()
+    if executable.endswith(".exe"):
+        executable = executable[:-4]
+
+    if executable in SHELL_DENIED_COMMANDS:
+        return f"command is explicitly denied: {executable}"
+    if executable not in SHELL_ALLOWED_COMMANDS:
+        return f"command is not in allowlist: {executable}"
+    return None
 
 
 def build_default_registry(memory_store: MemoryStore) -> ToolRegistry:
@@ -336,8 +428,9 @@ def build_default_registry(memory_store: MemoryStore) -> ToolRegistry:
     def run_shell_command(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         command = str(args.get("command", "")).strip()
         timeout_seconds = int(args.get("timeout_seconds", 10))
-        if not command:
-            raise ValueError("command is required")
+        policy_error = _shell_policy_error(command)
+        if policy_error:
+            raise PermissionError(policy_error)
 
         completed = subprocess.run(
             command,

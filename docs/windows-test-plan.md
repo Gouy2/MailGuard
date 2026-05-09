@@ -29,6 +29,7 @@ uv run python main.py
 /tools
 /tool read_text_file {"path":"README.md","max_chars":200}
 /tool run_shell_command {"command":"dir","timeout_seconds":3}
+/tool run_shell_command {"command":"rm -rf .","timeout_seconds":3}
 /pending
 /approve <pending_id>
 ```
@@ -39,12 +40,14 @@ uv run python main.py
 - `/tools` 显示工具列表，`run_shell_command` 应标记为需要确认
 - `read_text_file` 直接执行
 - `run_shell_command` 不直接执行，而是返回 pending id
+- 明显危险命令应被策略拒绝，不进入 pending
 - `/pending` 能看到待审批调用
 - `/approve` 后才真正执行命令
+- `/tool` 输出里会显示完整 `Trace: <trace_id>`
 
 ## Trace 测试
 
-如果聊天响应或服务端日志里拿到了 `trace_id`：
+`/tool` 命令会返回完整 `trace_id`。拿到以后输入：
 
 ```text
 /trace <trace_id>
@@ -59,4 +62,3 @@ uv run python main.py
 - 当前客户端只是通过命令展示审批和 trace，后续会做更自然的 UI。
 - 如果客户端提示服务端请求失败，先确认 `server` 是否运行在 `http://127.0.0.1:8000`。
 - 如果使用自定义地址，设置 `WISPERA_SERVER_URL`。
-

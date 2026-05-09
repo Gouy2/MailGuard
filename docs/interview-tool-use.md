@@ -58,6 +58,8 @@ Wispera 的 tool use 目标不是“模型能不能调函数”，而是：
 
 危险工具不会直接执行，而是创建 pending tool call，等待用户确认。
 
+危险工具还需要策略约束。用户批准不等于任何命令都能执行，系统仍要检查 allowlist / denylist，例如阻止删除文件、格式化磁盘、修改系统权限等明显高风险操作。
+
 ### 4. Traceability
 
 每一轮对话生成一个 `trace_id`。工具调用记录：
@@ -111,7 +113,7 @@ Wispera 的 tool use 目标不是“模型能不能调函数”，而是：
 - Windows 客户端展示 pending approval
 - Windows 客户端展示 tool trace
 - 更细的工具级权限策略
-- shell command allowlist / denylist
+- 更完整的 shell command allowlist / denylist
 
 ## 演示方式
 
@@ -129,10 +131,18 @@ Windows 客户端命令演示：
 - `/tools`
 - `/tool read_text_file {"path":"README.md","max_chars":200}`
 - `/tool run_shell_command {"command":"dir","timeout_seconds":3}`
+- `/tool run_shell_command {"command":"rm -rf .","timeout_seconds":3}` 应被策略拒绝
 - `/pending`
 - `/approve <pending_id>`
 - `/reject <pending_id>`
 - `/trace <trace_id>`
+
+当前策略：
+
+- 默认允许一组低风险只读命令，例如 `dir`、`pwd`、`ls`、`type`、`cat`、`python --version`
+- 明确拒绝删除、移动、权限修改、磁盘格式化、关机等高风险命令
+- 即使命令通过策略，也必须经过 dangerous permission approval
+- 手动工具执行会生成 `trace_id`，便于从客户端回查工具链路
 
 ## 客户端方向
 

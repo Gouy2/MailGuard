@@ -296,13 +296,16 @@ def _cmd_tool(args, chat_manager):
     try:
         client = _server_client(chat_manager)
         result = client.execute_tool(name, arguments)
+        trace_id = result.get("trace_id", "")
+        trace_hint = f"\nTrace: {trace_id}" if trace_id else ""
         if result.get("requires_approval"):
             pending_id = result.get("pending_tool_call_id", "")
-            return f"需要审批: {name}\nID: {pending_id[:8]}\n使用 /approve {pending_id[:8]}"
+            return f"需要审批: {name}\nID: {pending_id[:8]}{trace_hint}\n使用 /approve {pending_id[:8]}"
         if result.get("ok"):
             preview = str(result.get("result", ""))[:300]
-            return f"工具完成: {name}\n{preview}"
-        return f"工具失败: {result.get('error')}"
+            return f"工具完成: {name}{trace_hint}\n{preview}"
+        error_type = result.get("error_type", "error")
+        return f"工具失败: {error_type}{trace_hint}\n{result.get('error')}"
     except Exception as exc:
         return _format_error(exc)
 
