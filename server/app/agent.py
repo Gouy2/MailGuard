@@ -95,11 +95,95 @@ class AgentRuntime:
             {
                 "name": tool.name,
                 "description": tool.description,
-                "requires_confirmation": tool.requires_confirmation,
+                "permission": tool.permission.value,
+                "requires_confirmation": tool.permission.value == "dangerous",
                 "schema": tool.input_schema,
             }
             for tool in self.tool_registry.list()
         ]
+
+    def pending_tools(self) -> list[dict[str, Any]]:
+        return self.tool_registry.pending()
+
+    def trace(self, trace_id: str) -> list[dict[str, Any]]:
+        return self.tracer.read_trace(trace_id)
+
+    def approve_tool(self, pending_tool_call_id: str) -> dict[str, Any]:
+        pending_items = [item for item in self.tool_registry.pending() if item["id"] == pending_tool_call_id]
+        if not pending_items:
+            return {
+                "ok": False,
+                "error": "pending tool call not found",
+                "pending_tool_call_id": pending_tool_call_id,
+            }
+
+        pending = pending_items[0]
+        context = ToolContext(
+            session_id=pending["session_id"],
+            memory_store=self.memory_store,
+            trace_id=pending["trace_id"],
+        )
+        result = self.tool_registry.approve(pending_tool_call_id, context)
+        if pending["trace_id"]:
+            self.tracer.log_event(
+                pending["trace_id"],
+                "tool_approval",
+                {
+                    "pending_tool_call_id": pending_tool_call_id,
+                    "decision": "approved",
+                    "result": result,
+                },
+            )
+        return result
+
+    def reject_tool(self, pending_tool_call_id: str) -> dict[str, Any]:
+        pending_items = [item for item in self.tool_registry.pending() if item["id"] == pending_tool_call_id]
+        trace_id = pending_items[0]["trace_id"] if pending_items else None
+        result = self.tool_registry.reject(pending_tool_call_id)
+        if trace_id:
+            self.tracer.log_event(
+                trace_id,
+                "tool_approval",
+                {
+                    "pending_tool_call_id": pending_tool_call_id,
+                    "decision": "rejected",
+                    "result": result,
+                },
+            )
+        return result
+
+    def execute_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        session_id: str = "default",
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        context = ToolContext(
+            session_id=session_id,
+            memory_store=self.memory_store,
+            trace_id=trace_id,
+        )
+        result = self.tool_registry.execute(name, arguments, context)
+        if trace_id:
+            self.tracer.log_event(
+                trace_id,
+                "tool_result",
+                {
+                    "tool": name,
+                    "result": result,
+                },
+            )
+        return result
+
+    def execute_tool_for_test(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        session_id: str = "default",
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.execute_tool(name, arguments, session_id=session_id, trace_id=trace_id)
 
     def stream_chat(self, session_id: str, message: str, mode: str = "agent"):
         session_id = session_id.strip() or "default"
@@ -215,6 +299,16 @@ class AgentRuntime:
                         },
                     )
                     result = self.tool_registry.execute(tool_call.function.name, arguments, context)
+                    if result.get("requires_approval"):
+                        self.tracer.log_event(
+                            trace_id,
+                            "tool_pending",
+                            {
+                                "tool": tool_call.function.name,
+                                "pending_tool_call_id": result.get("pending_tool_call_id"),
+                                "reason": result.get("reason"),
+                            },
+                        )
                     self.tracer.log_event(
                         trace_id,
                         "tool_result",

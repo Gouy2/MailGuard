@@ -28,5 +28,3 @@ server/logs/
 
 # claude
 .claude/
-
-docs/

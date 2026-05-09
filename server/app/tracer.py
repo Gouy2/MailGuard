@@ -83,8 +83,21 @@ class TraceLogger:
             },
         )
 
+    def read_trace(self, trace_id: str) -> list[dict[str, Any]]:
+        path = self.trace_dir / f"{trace_id}.jsonl"
+        if not path.exists():
+            return []
+
+        events = []
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                events.append(json.loads(line))
+        return events
+
     def _append(self, trace_id: str, record: dict[str, Any]) -> None:
         path = self.trace_dir / f"{trace_id}.jsonl"
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-

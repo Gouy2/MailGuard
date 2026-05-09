@@ -2,15 +2,37 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import subprocess
+import time
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from .memory import MemoryStore
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+MAX_TOOL_RESULT_CHARS = 12000
+
+
+class ToolPermission(StrEnum):
+    READ = "read"
+    WRITE = "write"
+    DANGEROUS = "dangerous"
+
+
+@dataclass(slots=True)
+class PendingToolCall:
+    id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    session_id: str
+    trace_id: str | None
+    reason: str
+    created_at: str = field(default_factory=lambda: datetime.now().astimezone().isoformat())
 
 
 @dataclass(slots=True)
@@ -28,7 +50,7 @@ class ToolSpec:
     description: str
     input_schema: dict[str, Any]
     handler: Callable[[dict[str, Any], ToolContext], Any]
-    requires_confirmation: bool = False
+    permission: ToolPermission = ToolPermission.READ
 
     def as_openai_tool(self) -> dict[str, Any]:
         return {
@@ -44,6 +66,7 @@ class ToolSpec:
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
+        self._pending: dict[str, PendingToolCall] = {}
 
     def register(self, spec: ToolSpec) -> None:
         self._tools[spec.name] = spec
@@ -57,21 +80,141 @@ class ToolRegistry:
     def openai_tools(self) -> list[dict[str, Any]]:
         return [tool.as_openai_tool() for tool in self.list()]
 
-    def execute(self, name: str, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-        tool = self.get(name)
+    def pending(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": item.id,
+                "tool_name": item.tool_name,
+                "arguments": item.arguments,
+                "session_id": item.session_id,
+                "trace_id": item.trace_id,
+                "reason": item.reason,
+                "created_at": item.created_at,
+            }
+            for item in self._pending.values()
+        ]
+
+    def execute(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: ToolContext,
+        *,
+        approval: Literal["auto", "require", "approved"] = "auto",
+    ) -> dict[str, Any]:
+        if name not in self._tools:
+            return {
+                "ok": False,
+                "tool": name,
+                "error": "unknown tool",
+            }
+
+        tool = self._tools[name]
+        validation_error = self._validate(tool.input_schema, arguments)
+        if validation_error:
+            return {
+                "ok": False,
+                "tool": name,
+                "error": validation_error,
+                "error_type": "validation_error",
+            }
+
+        if tool.permission == ToolPermission.DANGEROUS and approval != "approved":
+            pending = PendingToolCall(
+                id=uuid.uuid4().hex,
+                tool_name=name,
+                arguments=arguments,
+                session_id=context.session_id,
+                trace_id=context.trace_id,
+                reason="dangerous tool requires explicit approval",
+            )
+            self._pending[pending.id] = pending
+            return {
+                "ok": False,
+                "tool": name,
+                "requires_approval": True,
+                "pending_tool_call_id": pending.id,
+                "reason": pending.reason,
+            }
+
+        started_at = time.perf_counter()
         try:
             result = tool.handler(arguments, context)
             return {
                 "ok": True,
                 "tool": name,
-                "result": result,
+                "permission": tool.permission.value,
+                "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                "result": _truncate_result(result),
             }
         except Exception as exc:  # pragma: no cover - defensive boundary
             return {
                 "ok": False,
                 "tool": name,
+                "permission": tool.permission.value,
+                "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
                 "error": f"{type(exc).__name__}: {exc}",
+                "error_type": "execution_error",
             }
+
+    def approve(self, pending_id: str, context: ToolContext) -> dict[str, Any]:
+        pending = self._pending.pop(pending_id, None)
+        if pending is None:
+            return {
+                "ok": False,
+                "error": "pending tool call not found",
+                "pending_tool_call_id": pending_id,
+            }
+        return self.execute(pending.tool_name, pending.arguments, context, approval="approved")
+
+    def reject(self, pending_id: str) -> dict[str, Any]:
+        pending = self._pending.pop(pending_id, None)
+        if pending is None:
+            return {
+                "ok": False,
+                "error": "pending tool call not found",
+                "pending_tool_call_id": pending_id,
+            }
+        return {
+            "ok": True,
+            "rejected": True,
+            "pending_tool_call_id": pending_id,
+            "tool": pending.tool_name,
+        }
+
+    def _validate(self, schema: dict[str, Any], arguments: dict[str, Any]) -> str | None:
+        if not isinstance(arguments, dict):
+            return "tool arguments must be an object"
+
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        additional_allowed = schema.get("additionalProperties", True)
+
+        for name in required:
+            if name not in arguments:
+                return f"missing required argument: {name}"
+
+        if not additional_allowed:
+            extra = sorted(set(arguments) - set(properties))
+            if extra:
+                return f"unexpected argument(s): {', '.join(extra)}"
+
+        for name, value in arguments.items():
+            if name not in properties:
+                continue
+            expected = properties[name].get("type")
+            if expected and not _matches_type(value, expected):
+                return f"argument {name} must be {expected}"
+
+            minimum = properties[name].get("minimum")
+            maximum = properties[name].get("maximum")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if minimum is not None and value < minimum:
+                    return f"argument {name} must be >= {minimum}"
+                if maximum is not None and value > maximum:
+                    return f"argument {name} must be <= {maximum}"
+
+        return None
 
 
 def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
@@ -83,6 +226,33 @@ def _schema(properties: dict[str, Any], required: list[str] | None = None) -> di
     if required:
         schema["required"] = required
     return schema
+
+
+def _matches_type(value: Any, expected: str) -> bool:
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "object":
+        return isinstance(value, dict)
+    return True
+
+
+def _truncate_result(result: Any) -> Any:
+    text = str(result)
+    if len(text) <= MAX_TOOL_RESULT_CHARS:
+        return result
+    return {
+        "truncated": True,
+        "preview": text[:MAX_TOOL_RESULT_CHARS],
+        "original_type": type(result).__name__,
+    }
 
 
 def _normalize_relative_path(path: str, workspace_root: Path) -> Path:
@@ -163,12 +333,35 @@ def build_default_registry(memory_store: MemoryStore) -> ToolRegistry:
             "truncated": len(content) > max_chars,
         }
 
+    def run_shell_command(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        command = str(args.get("command", "")).strip()
+        timeout_seconds = int(args.get("timeout_seconds", 10))
+        if not command:
+            raise ValueError("command is required")
+
+        completed = subprocess.run(
+            command,
+            cwd=context.workspace_root,
+            shell=True,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        return {
+            "command": command,
+            "returncode": completed.returncode,
+            "stdout": completed.stdout[-6000:],
+            "stderr": completed.stderr[-6000:],
+        }
+
     registry.register(
         ToolSpec(
             name="get_datetime",
             description="Get the current local date and time.",
             input_schema=_schema({}),
             handler=get_datetime,
+            permission=ToolPermission.READ,
         )
     )
     registry.register(
@@ -182,7 +375,7 @@ def build_default_registry(memory_store: MemoryStore) -> ToolRegistry:
                 required=["note"],
             ),
             handler=save_memory,
-            requires_confirmation=False,
+            permission=ToolPermission.WRITE,
         )
     )
     registry.register(
@@ -197,6 +390,7 @@ def build_default_registry(memory_store: MemoryStore) -> ToolRegistry:
                 required=["query"],
             ),
             handler=search_memory,
+            permission=ToolPermission.READ,
         )
     )
     registry.register(
@@ -209,7 +403,7 @@ def build_default_registry(memory_store: MemoryStore) -> ToolRegistry:
                 }
             ),
             handler=list_files,
-            requires_confirmation=False,
+            permission=ToolPermission.READ,
         )
     )
     registry.register(
@@ -219,13 +413,39 @@ def build_default_registry(memory_store: MemoryStore) -> ToolRegistry:
             input_schema=_schema(
                 {
                     "path": {"type": "string", "description": "Relative path under the workspace root."},
-                    "max_chars": {"type": "integer", "description": "Maximum characters to return.", "default": 8000},
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Maximum characters to return.",
+                        "default": 8000,
+                        "minimum": 1,
+                        "maximum": 50000,
+                    },
                 },
                 required=["path"],
             ),
             handler=read_text_file,
-            requires_confirmation=False,
+            permission=ToolPermission.READ,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="run_shell_command",
+            description="Run a shell command in the workspace root. This is dangerous and requires explicit user approval.",
+            input_schema=_schema(
+                {
+                    "command": {"type": "string", "description": "Shell command to execute."},
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "description": "Timeout in seconds.",
+                        "default": 10,
+                        "minimum": 1,
+                        "maximum": 30,
+                    },
+                },
+                required=["command"],
+            ),
+            handler=run_shell_command,
+            permission=ToolPermission.DANGEROUS,
         )
     )
     return registry
-

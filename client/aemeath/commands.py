@@ -1,5 +1,7 @@
 """命令系统模块 - 可扩展的命令注册与分发"""
 
+import json
+
 # 命令注册表
 COMMANDS = {}  # name -> {"desc": str, "handler": callable}
 
@@ -160,6 +162,151 @@ def _cmd_model(args, chat_manager):
     return "通过环境变量 OPENAI_MODEL 设置模型"
 
 
+def _server_client(chat_manager):
+    llm = chat_manager._get_llm()
+    if all(hasattr(llm, attr) for attr in ("health", "tools", "pending_tools")):
+        return llm
+
+    from .api_client import ServerClient
+    return ServerClient()
+
+
+def _format_error(exc):
+    return f"服务端请求失败: {exc}"
+
+
+def _cmd_server(args, chat_manager):
+    try:
+        client = _server_client(chat_manager)
+        health = client.health()
+        tools = ", ".join(health.get("tools", []))
+        return f"Server: {health.get('status')}\nTools: {tools or '无'}"
+    except Exception as exc:
+        return _format_error(exc)
+
+
+def _cmd_tools(args, chat_manager):
+    try:
+        client = _server_client(chat_manager)
+        tools = client.tools().get("tools", [])
+        if not tools:
+            return "暂无工具"
+        lines = ["工具列表:"]
+        for tool in tools:
+            marker = "!" if tool.get("requires_confirmation") else "-"
+            lines.append(f"{marker} {tool['name']} [{tool.get('permission')}]")
+        return "\n".join(lines)
+    except Exception as exc:
+        return _format_error(exc)
+
+
+def _cmd_pending(args, chat_manager):
+    try:
+        client = _server_client(chat_manager)
+        pending = client.pending_tools().get("pending", [])
+        if not pending:
+            return "没有待审批工具调用"
+        lines = ["待审批工具:"]
+        for item in pending:
+            lines.append(f"{item['id'][:8]} {item['tool_name']} {item.get('reason', '')}")
+        lines.append("使用 /approve <id> 或 /reject <id>")
+        return "\n".join(lines)
+    except Exception as exc:
+        return _format_error(exc)
+
+
+def _resolve_pending_id(client, short_id):
+    pending = client.pending_tools().get("pending", [])
+    matches = [item for item in pending if item["id"].startswith(short_id)]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise ValueError("ID 前缀不唯一，请输入更长的 pending id")
+    return matches[0]["id"]
+
+
+def _cmd_approve(args, chat_manager):
+    pending_id = args.strip()
+    if not pending_id:
+        return "用法: /approve <pending_id>"
+    try:
+        client = _server_client(chat_manager)
+        full_id = _resolve_pending_id(client, pending_id)
+        if not full_id:
+            return "没有找到这个 pending id"
+        result = client.approve_tool(full_id)
+        if result.get("ok"):
+            return f"已批准并执行: {result.get('tool')}"
+        return f"批准失败: {result.get('error')}"
+    except Exception as exc:
+        return _format_error(exc)
+
+
+def _cmd_reject(args, chat_manager):
+    pending_id = args.strip()
+    if not pending_id:
+        return "用法: /reject <pending_id>"
+    try:
+        client = _server_client(chat_manager)
+        full_id = _resolve_pending_id(client, pending_id)
+        if not full_id:
+            return "没有找到这个 pending id"
+        result = client.reject_tool(full_id)
+        if result.get("ok"):
+            return f"已拒绝: {result.get('tool')}"
+        return f"拒绝失败: {result.get('error')}"
+    except Exception as exc:
+        return _format_error(exc)
+
+
+def _cmd_trace(args, chat_manager):
+    trace_id = args.strip()
+    if not trace_id:
+        return "用法: /trace <trace_id>"
+    try:
+        client = _server_client(chat_manager)
+        response = client.trace(trace_id)
+        events = response.get("events", [])
+        if not events:
+            return "没有找到 trace"
+        lines = [f"Trace {trace_id[:8]}:"]
+        for event in events[-8:]:
+            payload = event.get("payload", {})
+            summary = payload.get("status") or payload.get("tool") or payload.get("decision") or ""
+            lines.append(f"- {event.get('event')} {summary}")
+        return "\n".join(lines)
+    except Exception as exc:
+        return _format_error(exc)
+
+
+def _cmd_tool(args, chat_manager):
+    parts = args.strip().split(None, 1)
+    if not parts:
+        return "用法: /tool <name> [json_arguments]"
+
+    name = parts[0]
+    raw_arguments = parts[1] if len(parts) > 1 else "{}"
+    try:
+        arguments = json.loads(raw_arguments)
+    except json.JSONDecodeError as exc:
+        return f"JSON 参数错误: {exc}"
+    if not isinstance(arguments, dict):
+        return "JSON 参数必须是对象"
+
+    try:
+        client = _server_client(chat_manager)
+        result = client.execute_tool(name, arguments)
+        if result.get("requires_approval"):
+            pending_id = result.get("pending_tool_call_id", "")
+            return f"需要审批: {name}\nID: {pending_id[:8]}\n使用 /approve {pending_id[:8]}"
+        if result.get("ok"):
+            preview = str(result.get("result", ""))[:300]
+            return f"工具完成: {name}\n{preview}"
+        return f"工具失败: {result.get('error')}"
+    except Exception as exc:
+        return _format_error(exc)
+
+
 # --- 注册内置命令 ---
 register("/help", "显示可用命令", _cmd_help)
 register("/cmd", "打开命令行", _cmd_cmd)
@@ -171,3 +318,10 @@ register("/sleep", "休眠", _cmd_sleep)
 register("/wake", "唤醒", _cmd_wake)
 register("/clear", "清空对话历史", _cmd_clear)
 register("/model", "查看当前模型", _cmd_model)
+register("/server", "查看服务端状态", _cmd_server)
+register("/tools", "查看服务端工具", _cmd_tools)
+register("/tool", "手动执行工具", _cmd_tool)
+register("/pending", "查看待审批工具", _cmd_pending)
+register("/approve", "批准工具调用", _cmd_approve)
+register("/reject", "拒绝工具调用", _cmd_reject)
+register("/trace", "查看 trace 摘要", _cmd_trace)

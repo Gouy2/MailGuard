@@ -26,6 +26,16 @@ class ClearRequest(BaseModel):
     session_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
+class ToolDecisionRequest(BaseModel):
+    pending_tool_call_id: str = Field(min_length=1)
+
+
+class ToolExecuteRequest(BaseModel):
+    name: str = Field(min_length=1)
+    arguments: dict = Field(default_factory=dict)
+    session_id: str = Field(default="default", min_length=1, max_length=128)
+
+
 @app.get("/health")
 def health():
     return {"service": "wispera-server", "status": "ok", **runtime.health()}
@@ -85,3 +95,45 @@ def memory(session_id: str | None = None, limit: int = 20):
 @app.get("/tools")
 def tools():
     return {"status": "ok", "tools": runtime.tool_inventory()}
+
+
+@app.get("/tools/pending")
+def pending_tools():
+    return {"status": "ok", "pending": runtime.pending_tools()}
+
+
+@app.post("/tools/execute")
+def execute_tool(request: ToolExecuteRequest):
+    result = runtime.execute_tool(
+        request.name,
+        request.arguments,
+        session_id=request.session_id,
+    )
+    status = "ok" if result.get("ok") else "error"
+    if result.get("requires_approval"):
+        status = "pending"
+    return {"status": status, **result}
+
+
+@app.post("/tools/approve")
+def approve_tool(request: ToolDecisionRequest):
+    result = runtime.approve_tool(request.pending_tool_call_id)
+    status = "ok" if result.get("ok") else "error"
+    return {"status": status, **result}
+
+
+@app.post("/tools/reject")
+def reject_tool(request: ToolDecisionRequest):
+    result = runtime.reject_tool(request.pending_tool_call_id)
+    status = "ok" if result.get("ok") else "error"
+    return {"status": status, **result}
+
+
+@app.get("/traces/{trace_id}")
+def trace(trace_id: str):
+    events = runtime.trace(trace_id)
+    return {
+        "status": "ok" if events else "not_found",
+        "trace_id": trace_id,
+        "events": events,
+    }

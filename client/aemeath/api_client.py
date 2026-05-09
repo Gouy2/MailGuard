@@ -68,6 +68,37 @@ class ServerClient:
     def health(self) -> dict:
         return self._get_json("/health")
 
+    def tools(self) -> dict:
+        return self._get_json("/tools")
+
+    def pending_tools(self) -> dict:
+        return self._get_json("/tools/pending")
+
+    def execute_tool(self, name: str, arguments: dict | None = None) -> dict:
+        return self._post_json(
+            "/tools/execute",
+            {
+                "name": name,
+                "arguments": arguments or {},
+                "session_id": self.session_id,
+            },
+        )
+
+    def approve_tool(self, pending_tool_call_id: str) -> dict:
+        return self._post_json(
+            "/tools/approve",
+            {"pending_tool_call_id": pending_tool_call_id},
+        )
+
+    def reject_tool(self, pending_tool_call_id: str) -> dict:
+        return self._post_json(
+            "/tools/reject",
+            {"pending_tool_call_id": pending_tool_call_id},
+        )
+
+    def trace(self, trace_id: str) -> dict:
+        return self._get_json(f"/traces/{trace_id}")
+
     def _get_json(self, path: str) -> dict:
         with urllib.request.urlopen(f"{self.base_url}{path}", timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
@@ -84,4 +115,3 @@ class ServerClient:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             raise RuntimeError(exc.read().decode("utf-8")) from exc
-
