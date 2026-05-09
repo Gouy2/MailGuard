@@ -615,8 +615,14 @@ class ChatManager:
 
     def _get_llm(self):
         if self.llm is None:
-            from .llm import LLMClient
-            self.llm = LLMClient()
+            try:
+                from .api_client import ServerClient
+                client = ServerClient()
+                client.health()
+                self.llm = client
+            except Exception:
+                from .llm import LLMClient
+                self.llm = LLMClient()
         return self.llm
 
     def _on_message(self, text):

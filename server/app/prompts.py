@@ -1,10 +1,6 @@
-"""Prompt 管理模块
+"""Prompt management for the Wispera agent."""
 
-职责：
-- 管理 System Prompt 模板
-- 动态构建 prompt（注入记忆上下文、工具列表）
-- Prompt 版本管理
-"""
+from __future__ import annotations
 
 SYSTEM_PROMPT = """你是爱弥斯，也叫「小爱」。
 
@@ -20,3 +16,21 @@ SYSTEM_PROMPT = """你是爱弥斯，也叫「小爱」。
 
 你说话简短，像发消息。会用emoji，会用颜文字。语气靠用词和节奏传达。你不说教，不讲大道理。
 """
+
+SIMPLE_SYSTEM_PROMPT = "你是一个简洁、直接、可靠的桌面助手。"
+
+
+def build_system_prompt(mode: str = "agent", tool_inventory: list[dict[str, object]] | None = None) -> str:
+    if mode != "agent":
+        return SIMPLE_SYSTEM_PROMPT
+
+    parts = [
+        SYSTEM_PROMPT.strip(),
+        "你可以在需要时调用工具。优先用工具获取事实、检索记忆、读取文件或执行明确操作。",
+    ]
+    if tool_inventory:
+        tool_names = ", ".join(tool["name"] for tool in tool_inventory if "name" in tool)
+        if tool_names:
+            parts.append(f"可用工具: {tool_names}")
+    return "\n\n".join(parts)
+

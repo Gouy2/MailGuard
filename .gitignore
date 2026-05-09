@@ -24,6 +24,9 @@ todolist.md
 # Server data
 server/data/
 server/logs/
+.wispera/
 
 # claude
 .claude/
+
+docs/
