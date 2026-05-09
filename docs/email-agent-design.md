@@ -168,6 +168,30 @@ The first implementation round ships only local, deterministic read behavior:
 
 This phase does not implement OAuth, real mailbox access, scheduler autonomy, archive/mark-read/star/draft actions, or preference memory. Those features remain planned, but keeping Phase 1 read-only makes the project demoable and testable quickly.
 
+## Phase 2 Implementation Boundary
+
+The second implementation round ships headless approval-gated mailbox actions:
+
+- expose `email_archive`, `email_mark_read`, `email_star`, and `email_create_draft` as dangerous tools
+- keep all mutation logic on the server side
+- require the existing pending approval flow before any action executes
+- store mock provider state in memory only, so tests remain deterministic and do not rewrite the JSON fixture
+- verify the flow through service tests, `/tool`, `/pending`, `/approve`, `/reject`, and `/trace`
+
+This phase does not add a dedicated Windows UI for mailbox actions. The client remains a thin command shell until the server-side action semantics, trace, and tests are stable.
+
+## Phase 3 Implementation Boundary
+
+The third implementation round ships structured preference memory:
+
+- store email-specific preferences separately from free-form chat notes
+- support important senders/domains, ignored senders/domains, ignored categories, report schedule, and timezone
+- expose preference tools through the existing tool registry
+- make classification cite matched preferences in its reasons
+- keep the implementation headless-first and testable through service tests and `/tool`
+
+This phase does not use vector search or RAG. Email triage preferences are structured product state because the classifier needs deterministic rules, inspectability, and predictable overrides.
+
 ## Mock Email Provider
 
 The first provider should be deterministic and local.

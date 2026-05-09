@@ -121,7 +121,7 @@ Recommended demo:
 
 After approval-gated actions are implemented, extend the demo:
 
-1. Run `/email archive <id>`.
+1. Run `/tool email_archive {"email_id":"email-001"}`.
 2. Show pending approval.
 3. Approve the action.
 4. Open trace and show the full chain.

@@ -139,7 +139,7 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
             "provider": type(email_provider).__name__,
             "email": email.detail_dict(max_body_chars=max_body_chars),
             "summary": email.snippet,
-            "classification": classify_email(email),
+            "classification": classify_email(email, context.memory_store.email_preferences(context.session_id)),
         }
 
     def email_classify(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -148,14 +148,15 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
         return {
             "provider": type(email_provider).__name__,
             "email": email.summary_dict(),
-            "classification": classify_email(email),
+            "classification": classify_email(email, context.memory_store.email_preferences(context.session_id)),
         }
 
     def email_report_important(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         limit = _bounded_int(args.get("limit"), default=20, minimum=1, maximum=100)
         unread_only = bool(args.get("unread_only", False))
         emails = email_provider.list_recent(limit=limit, unread_only=unread_only)
-        classified = [(email, classify_email(email)) for email in emails]
+        preferences = context.memory_store.email_preferences(context.session_id)
+        classified = [(email, classify_email(email, preferences)) for email in emails]
         important = [(email, decision) for email, decision in classified if decision["is_reportable"]]
         ignored = [(email, decision) for email, decision in classified if decision["is_ignored"]]
         ignored_counts = Counter(decision["category"] for _, decision in ignored)
@@ -184,9 +185,10 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
         limit = _bounded_int(args.get("limit"), default=20, minimum=1, maximum=100)
         unread_only = bool(args.get("unread_only", False))
         emails = email_provider.list_recent(limit=limit, unread_only=unread_only)
+        preferences = context.memory_store.email_preferences(context.session_id)
         ignored = [
             (email, decision)
-            for email, decision in ((email, classify_email(email)) for email in emails)
+            for email, decision in ((email, classify_email(email, preferences)) for email in emails)
             if decision["is_ignored"]
         ]
         return {
@@ -194,6 +196,85 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
             "fetched": len(emails),
             "ignored_count": len(ignored),
             "ignored": [_report_item(email, decision) for email, decision in ignored],
+        }
+
+    def email_archive(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        email_id = _required_string(args, "email_id")
+        return {
+            "provider": type(email_provider).__name__,
+            "action": "archive",
+            "result": email_provider.archive(email_id),
+        }
+
+    def email_mark_read(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        email_id = _required_string(args, "email_id")
+        is_read = bool(args.get("is_read", True))
+        return {
+            "provider": type(email_provider).__name__,
+            "action": "mark_read",
+            "result": email_provider.mark_read(email_id, is_read=is_read),
+        }
+
+    def email_star(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        email_id = _required_string(args, "email_id")
+        starred = bool(args.get("starred", True))
+        return {
+            "provider": type(email_provider).__name__,
+            "action": "star",
+            "result": email_provider.star(email_id, starred=starred),
+        }
+
+    def email_create_draft(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        email_id = _required_string(args, "email_id")
+        body = _required_string(args, "body")
+        to = args.get("to")
+        if to is not None and not all(isinstance(item, str) and item.strip() for item in to):
+            raise ValueError("to must contain non-empty email addresses")
+        return {
+            "provider": type(email_provider).__name__,
+            "action": "create_draft",
+            "result": email_provider.create_draft(email_id, body=body, to=to),
+        }
+
+    def email_get_preferences(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        return {
+            "preferences": context.memory_store.email_preferences(context.session_id),
+        }
+
+    def email_add_preference(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        key = _required_string(args, "key")
+        value = _required_string(args, "value")
+        preferences = context.memory_store.add_email_preference(context.session_id, key, value)
+        return {
+            "updated": True,
+            "operation": "add",
+            "key": key,
+            "value": value.strip().lower(),
+            "preferences": preferences,
+        }
+
+    def email_remove_preference(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        key = _required_string(args, "key")
+        value = _required_string(args, "value")
+        preferences = context.memory_store.remove_email_preference(context.session_id, key, value)
+        return {
+            "updated": True,
+            "operation": "remove",
+            "key": key,
+            "value": value.strip().lower(),
+            "preferences": preferences,
+        }
+
+    def email_set_preference(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        key = _required_string(args, "key")
+        if "value" not in args:
+            raise ValueError("value is required")
+        preferences = context.memory_store.set_email_preference(context.session_id, key, args["value"])
+        return {
+            "updated": True,
+            "operation": "set",
+            "key": key,
+            "preferences": preferences,
         }
 
     registry.register(
@@ -324,15 +405,147 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
             permission=ToolPermission.READ,
         )
     )
+    registry.register(
+        ToolSpec(
+            name="email_get_preferences",
+            description="Inspect structured email triage preferences for this session.",
+            input_schema=_schema({}),
+            handler=email_get_preferences,
+            permission=ToolPermission.READ,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_add_preference",
+            description="Add one structured email triage preference, such as an important sender or ignored category.",
+            input_schema=_schema(
+                {
+                    "key": {
+                        "type": "string",
+                        "description": "Preference key, for example important_senders, ignored_domains, ignored_categories.",
+                    },
+                    "value": {"type": "string", "description": "Preference value to add."},
+                },
+                required=["key", "value"],
+            ),
+            handler=email_add_preference,
+            permission=ToolPermission.WRITE,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_remove_preference",
+            description="Remove one structured email triage preference.",
+            input_schema=_schema(
+                {
+                    "key": {"type": "string", "description": "Preference key to update."},
+                    "value": {"type": "string", "description": "Preference value to remove."},
+                },
+                required=["key", "value"],
+            ),
+            handler=email_remove_preference,
+            permission=ToolPermission.WRITE,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_set_preference",
+            description="Set a structured email triage preference, such as report_schedule or timezone.",
+            input_schema=_schema(
+                {
+                    "key": {"type": "string", "description": "Preference key to set."},
+                    "value": {
+                        "description": "Preference value. List keys accept a string or array; scalar keys accept a string.",
+                    },
+                },
+                required=["key", "value"],
+            ),
+            handler=email_set_preference,
+            permission=ToolPermission.WRITE,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_archive",
+            description="Archive one email. This mutates mailbox state and requires approval.",
+            input_schema=_schema(
+                {
+                    "email_id": {"type": "string", "description": "Stable email id."},
+                },
+                required=["email_id"],
+            ),
+            handler=email_archive,
+            permission=ToolPermission.DANGEROUS,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_mark_read",
+            description="Mark one email as read or unread. This mutates mailbox state and requires approval.",
+            input_schema=_schema(
+                {
+                    "email_id": {"type": "string", "description": "Stable email id."},
+                    "is_read": {
+                        "type": "boolean",
+                        "description": "True to mark read, false to mark unread.",
+                        "default": True,
+                    },
+                },
+                required=["email_id"],
+            ),
+            handler=email_mark_read,
+            permission=ToolPermission.DANGEROUS,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_star",
+            description="Star or unstar one email. This mutates mailbox state and requires approval.",
+            input_schema=_schema(
+                {
+                    "email_id": {"type": "string", "description": "Stable email id."},
+                    "starred": {
+                        "type": "boolean",
+                        "description": "True to star, false to unstar.",
+                        "default": True,
+                    },
+                },
+                required=["email_id"],
+            ),
+            handler=email_star,
+            permission=ToolPermission.DANGEROUS,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_create_draft",
+            description="Create a draft reply for one email without sending it. This requires approval.",
+            input_schema=_schema(
+                {
+                    "email_id": {"type": "string", "description": "Stable email id."},
+                    "body": {"type": "string", "description": "Draft body. The draft is not sent."},
+                    "to": {
+                        "type": "array",
+                        "description": "Optional recipient override. Defaults to the original sender.",
+                    },
+                },
+                required=["email_id", "body"],
+            ),
+            handler=email_create_draft,
+            permission=ToolPermission.DANGEROUS,
+        )
+    )
 
 
-def classify_email(email: EmailMessage) -> dict[str, Any]:
+def classify_email(email: EmailMessage, preferences: dict[str, Any] | None = None) -> dict[str, Any]:
+    preferences = preferences or {}
     text = _email_text(email)
     labels = {label.lower() for label in email.labels}
     from_local = email.from_email.split("@", 1)[0].lower()
     reasons: list[str] = []
     positive_signals: list[str] = []
     negative_signals: list[str] = []
+    preference_signals = _preference_signals(email, preferences)
 
     if _is_direct_sender(email):
         positive_signals.append("direct sender")
@@ -361,15 +574,51 @@ def classify_email(email: EmailMessage) -> dict[str, Any]:
         negative_signals.append("social digest/noise signal")
 
     category = _choose_category(text, labels, positive_signals, negative_signals)
+    if category in _normalized_preferences(preferences, "ignored_categories"):
+        preference_signals["ignored_category"].append(category)
+        preference_signals["ignored"].append(f"ignored category preference: {category}")
     importance = _choose_importance(category, positive_signals, negative_signals)
     suggested_action = _suggest_action(category, text)
+
+    explicit_ignored = bool(
+        preference_signals["ignored_sender"] or preference_signals["ignored_domain"]
+    )
+    important_preference = bool(
+        preference_signals["important_sender"] or preference_signals["important_domain"]
+    )
+    ignored_preference = explicit_ignored or bool(preference_signals["ignored_category"])
+
+    if explicit_ignored:
+        category = "noise"
+        importance = "low"
+        suggested_action = "ignore"
+    elif important_preference:
+        if category in LOW_VALUE_CATEGORIES or category == "notification":
+            category = "important"
+        importance = "high"
+        if suggested_action == "ignore":
+            suggested_action = "review"
+    elif ignored_preference:
+        importance = "low"
+        suggested_action = "ignore"
 
     if positive_signals:
         reasons.extend(positive_signals)
     if category in LOW_VALUE_CATEGORIES:
         reasons.extend(negative_signals)
+    reasons.extend(preference_signals["important"])
+    reasons.extend(preference_signals["ignored"])
     if not reasons:
         reasons.append("no strong importance signal")
+
+    is_ignored = category in LOW_VALUE_CATEGORIES or importance == "low"
+    is_reportable = category not in LOW_VALUE_CATEGORIES and importance in REPORTABLE_IMPORTANCE
+    if explicit_ignored or ignored_preference and not important_preference:
+        is_ignored = True
+        is_reportable = False
+    if important_preference and not explicit_ignored:
+        is_reportable = True
+        is_ignored = False
 
     return {
         "email_id": email.id,
@@ -380,9 +629,13 @@ def classify_email(email: EmailMessage) -> dict[str, Any]:
         "signals": {
             "positive": _unique(positive_signals),
             "negative": _unique(negative_signals),
+            "preferences": {
+                "important": _unique(preference_signals["important"]),
+                "ignored": _unique(preference_signals["ignored"]),
+            },
         },
-        "is_reportable": category not in LOW_VALUE_CATEGORIES and importance in REPORTABLE_IMPORTANCE,
-        "is_ignored": category in LOW_VALUE_CATEGORIES or importance == "low",
+        "is_reportable": is_reportable,
+        "is_ignored": is_ignored,
     }
 
 
@@ -487,6 +740,65 @@ def _is_direct_sender(email: EmailMessage) -> bool:
     if labels & {"newsletter", "promotion", "social"}:
         return False
     return bool(email.from_name and "@" in email.from_email)
+
+
+def _preference_signals(email: EmailMessage, preferences: dict[str, Any]) -> dict[str, list[str]]:
+    from_email = email.from_email.strip().lower()
+    domain = _email_domain(from_email)
+    signals: dict[str, list[str]] = {
+        "important": [],
+        "ignored": [],
+        "important_sender": [],
+        "important_domain": [],
+        "ignored_sender": [],
+        "ignored_domain": [],
+        "ignored_category": [],
+    }
+
+    if from_email in _normalized_preferences(preferences, "important_senders"):
+        signals["important_sender"].append(from_email)
+        signals["important"].append(f"important sender preference: {from_email}")
+    if from_email in _normalized_preferences(preferences, "ignored_senders"):
+        signals["ignored_sender"].append(from_email)
+        signals["ignored"].append(f"ignored sender preference: {from_email}")
+
+    important_domain = _matching_domain(domain, _normalized_preferences(preferences, "important_domains"))
+    if important_domain:
+        signals["important_domain"].append(important_domain)
+        signals["important"].append(f"important domain preference: {important_domain}")
+
+    ignored_domain = _matching_domain(domain, _normalized_preferences(preferences, "ignored_domains"))
+    if ignored_domain:
+        signals["ignored_domain"].append(ignored_domain)
+        signals["ignored"].append(f"ignored domain preference: {ignored_domain}")
+
+    return signals
+
+
+def _normalized_preferences(preferences: dict[str, Any], key: str) -> set[str]:
+    value = preferences.get(key, [])
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        values = []
+    return {str(item).strip().lower() for item in values if str(item).strip()}
+
+
+def _email_domain(from_email: str) -> str:
+    if "@" not in from_email:
+        return ""
+    return from_email.rsplit("@", 1)[1].strip().lower()
+
+
+def _matching_domain(domain: str, preferred_domains: set[str]) -> str:
+    if not domain:
+        return ""
+    for preferred in sorted(preferred_domains, key=len, reverse=True):
+        if domain == preferred or domain.endswith(f".{preferred}"):
+            return preferred
+    return ""
 
 
 def _unique(items: list[str]) -> list[str]:

@@ -55,7 +55,7 @@ Expected:
 
 ## Email MVP Tests
 
-These commands verify the mock-provider email MVP.
+These commands verify the mock-provider email MVP read path.
 
 ```text
 /email report
@@ -82,19 +82,57 @@ Reference examples:
 - `email-005` should classify as `low/promotion`
 - `email-007` should classify as `high/security`
 
-Planned approval-flow tests for Phase 2:
+## Approval-gated Email Action Tests
+
+These commands verify the mock-provider write path through the generic tool interface. A dedicated `/email archive` command or UI can be added later.
 
 ```text
-/email archive <email_id>
+/tool email_archive {"email_id":"email-001"}
 /pending
 /approve <pending_id>
+/email detail email-001
+/tool email_mark_read {"email_id":"email-002","is_read":true}
+/pending
+/reject <pending_id>
+/email detail email-002
+/tool email_create_draft {"email_id":"email-001","body":"Thanks, I will review this today."}
+/pending
+/approve <pending_id>
+/trace <trace_id>
 ```
 
-Expected after Phase 2:
+Expected:
 
-- `/email archive <email_id>` creates pending approval
-- `/approve <pending_id>` executes archive
-- trace includes email tool calls and user approval
+- each action tool creates pending approval before mutation
+- approving `email_archive` removes `inbox` and adds `archived`
+- rejecting `email_mark_read` leaves the email unread
+- approving `email_create_draft` creates a draft record but does not send email
+- trace includes the proposed tool call, approval decision, and provider result
+
+## Preference Memory Tests
+
+These commands verify structured email preferences without needing a dedicated frontend UI.
+
+```text
+/tool email_get_preferences {}
+/tool email_add_preference {"key":"important_senders","value":"newsletter@designweekly.example"}
+/email classify email-004
+/tool email_add_preference {"key":"ignored_senders","value":"maya.chen@acme-corp.com"}
+/email classify email-001
+/tool email_add_preference {"key":"ignored_categories","value":"notification"}
+/email report
+/tool email_remove_preference {"key":"ignored_categories","value":"notification"}
+/tool email_set_preference {"key":"timezone","value":"Asia/Shanghai"}
+/tool email_get_preferences {}
+```
+
+Expected:
+
+- `email_get_preferences` returns structured lists and scalar settings
+- adding `important_senders` promotes `email-004` from newsletter/low to important/high
+- adding `ignored_senders` suppresses `email-001` and cites the matched preference
+- adding `ignored_categories=notification` reduces the important report count and increases ignored count
+- removing a preference makes future classifications revert to the remaining preferences
 
 ## Safety Checks
 

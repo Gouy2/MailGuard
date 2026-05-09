@@ -51,12 +51,12 @@ Goal: safely support mailbox actions.
 
 Deliverables:
 
-- `archive_email`
-- `mark_email_read`
-- `star_email`
-- `create_draft_reply`
-- pending approval flow
-- action trace
+- `email_archive` - complete against mock provider
+- `email_mark_read` - complete against mock provider
+- `email_star` - complete against mock provider
+- `email_create_draft` - complete against mock provider
+- pending approval flow - complete through existing tool runtime
+- action trace - complete through existing tool runtime
 
 Acceptance:
 
@@ -69,23 +69,27 @@ MVP excludes:
 - send email
 - delete email
 
+Status: implemented headlessly against mock provider. Dedicated Windows UI can wait until server semantics are stable.
+
 ## Phase 3 - Preference Memory
 
 Goal: make triage adapt to the user without RAG.
 
 Deliverables:
 
-- Important sender/domain rules
-- Ignored sender/category rules
-- User feedback commands
-- Preference storage
-- Classification reasons that cite matching preferences
+- Important sender/domain rules - complete
+- Ignored sender/domain/category rules - complete
+- User feedback commands through preference tools - complete
+- Preference storage - complete as structured session memory
+- Classification reasons that cite matching preferences - complete
 
 Acceptance:
 
 - User can mark a sender as important or ignored
 - Future reports reflect those preferences
 - Preferences are inspectable and editable
+
+Status: implemented headlessly through email preference tools. Persistence beyond process memory can be added later if needed.
 
 ## Phase 4 - Scheduler / Autonomy
 

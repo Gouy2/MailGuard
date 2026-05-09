@@ -53,7 +53,23 @@ Current tools:
 - `email_report_important`
 - `email_list_ignored`
 
-Write paths are planned behind approval gates.
+Current approval-gated action tools:
+
+- `email_archive`
+- `email_mark_read`
+- `email_star`
+- `email_create_draft`
+
+These tools are registered as `dangerous`, so calling them creates a pending tool call first. The provider state changes only after explicit approval.
+
+Current preference tools:
+
+- `email_get_preferences`
+- `email_add_preference`
+- `email_remove_preference`
+- `email_set_preference`
+
+Preference tools are regular write tools, not dangerous mailbox mutations. They update local structured triage state for the current session.
 
 ## Classification Policy
 
@@ -82,10 +98,38 @@ Current classifier behavior:
 - direct requests, review/confirm/verify wording, deadlines, and recruiting context become action items
 - newsletters, promotions, and social digests become ignored low-priority items
 - operational notifications such as CI failures remain reportable at medium importance
+- important sender/domain preferences can promote low-priority messages into reportable items
+- ignored sender/domain/category preferences can suppress messages and cite the matched preference
 
 Important design note:
 
 The deterministic classifier is not meant to be the final intelligence layer. It is a baseline that makes behavior explainable, testable, and easy to compare against a later LLM-based classifier.
+
+## Preference Memory
+
+Email preferences are structured memory, not RAG.
+
+Current preference state:
+
+- `important_senders`
+- `important_domains`
+- `ignored_senders`
+- `ignored_domains`
+- `ignored_categories`
+- `report_schedule`
+- `timezone`
+
+Why this matters:
+
+- deterministic classification overrides
+- inspectable user state
+- clear edit/remove semantics
+- easy test coverage
+- reasons can cite exact matched preference
+
+Interview line:
+
+> I did not use vector memory for mailbox preferences. Sender, domain, and category preferences are structured product state because the classifier needs deterministic behavior and explainable overrides.
 
 ## Tool-use Mapping
 
@@ -107,6 +151,30 @@ The Windows client command `/email` is only a thin command adapter:
 - `/email classify <id>` calls `email_classify`
 
 This keeps provider logic and classification policy on the server side, where tracing, permissions, and future scheduler execution already live.
+
+Approval-gated actions are currently tested headlessly through the generic tool commands and APIs:
+
+- `/tool email_archive {"email_id":"email-001"}`
+- `/pending`
+- `/approve <pending_id>`
+- `/trace <trace_id>`
+
+This is intentional. It lets the project mature the server-side action semantics before adding dedicated Windows UI.
+
+## Approval Safety
+
+The action tools demonstrate a key agent safety pattern:
+
+- the model or user can propose a mailbox mutation
+- the tool registry validates arguments and permission level
+- dangerous tools become pending calls instead of executing
+- user approval executes the stored call
+- rejection drops the call without mutating provider state
+- trace records the proposal, decision, and final result
+
+Interview line:
+
+> I treat mailbox mutations as dangerous tool calls. Even in a mock provider, archive, mark-read, star, and draft creation go through the same pending approval flow that a real Outlook/Gmail provider would use.
 
 ## Privacy Notes
 
