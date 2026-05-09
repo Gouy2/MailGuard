@@ -1,10 +1,12 @@
 # Windows Test Plan
 
-这份文档记录需要在 Windows 上验证的客户端行为。Mac 本地主要负责服务端和通用逻辑验证。
+This document describes how the Windows client should be tested as Wispera moves toward the Email Triage Agent MVP.
 
-## 准备
+Mac is currently used for code editing and service-level tests. Windows remains the target runtime for the desktop client.
 
-在 Windows 上拉取最新代码后：
+## Setup
+
+Start the server:
 
 ```bash
 cd server
@@ -12,7 +14,7 @@ uv sync
 uv run uvicorn app.main:app --reload
 ```
 
-另开一个终端：
+Start the Windows client:
 
 ```bash
 cd client
@@ -20,45 +22,97 @@ uv sync
 uv run python main.py
 ```
 
-## Tool Use 命令测试
+## Current Regression Tests
 
-在桌宠输入框里依次输入：
+Run service-level tests first:
+
+```bash
+python -m unittest tests.test_email_tools
+```
+
+These commands verify the existing tool-use runtime while email tools are being implemented.
 
 ```text
 /server
 /tools
 /tool read_text_file {"path":"README.md","max_chars":200}
-/tool run_shell_command {"command":"dir","timeout_seconds":3}
 /tool run_shell_command {"command":"rm -rf .","timeout_seconds":3}
+/tool run_shell_command {"command":"dir","timeout_seconds":3}
+/pending
+/approve <pending_id>
+/trace <trace_id>
+```
+
+Expected:
+
+- `/server` shows service status `ok`
+- `/tools` lists registered tools
+- `read_text_file` executes directly
+- dangerous shell command is rejected by policy
+- allowed shell command still enters pending approval
+- approval executes the pending call
+- trace shows tool result and approval decision
+
+## Email MVP Tests
+
+These commands verify the mock-provider email MVP.
+
+```text
+/email report
+/email report --unread --limit=10
+/email ignored
+/email detail email-001
+/email classify email-007
+/trace <trace_id>
+```
+
+Expected:
+
+- `/email report` shows important emails and ignored counts
+- every important email includes reason and suggested action
+- `/email ignored` shows low-priority emails and ignore reasons
+- `/email detail <email_id>` shows summary and classification reason
+- `/email classify <email_id>` shows category, importance, reason, and suggested action
+- trace includes the email tool call and result
+
+Reference examples:
+
+- `email-001` should classify as `high/action_required`
+- `email-004` should classify as `low/newsletter`
+- `email-005` should classify as `low/promotion`
+- `email-007` should classify as `high/security`
+
+Planned approval-flow tests for Phase 2:
+
+```text
+/email archive <email_id>
 /pending
 /approve <pending_id>
 ```
 
-预期：
+Expected after Phase 2:
 
-- `/server` 显示服务端状态为 `ok`
-- `/tools` 显示工具列表，`run_shell_command` 应标记为需要确认
-- `read_text_file` 直接执行
-- `run_shell_command` 不直接执行，而是返回 pending id
-- 明显危险命令应被策略拒绝，不进入 pending
-- `/pending` 能看到待审批调用
-- `/approve` 后才真正执行命令
-- `/tool` 输出里会显示完整 `Trace: <trace_id>`
+- `/email archive <email_id>` creates pending approval
+- `/approve <pending_id>` executes archive
+- trace includes email tool calls and user approval
 
-## Trace 测试
+## Safety Checks
 
-`/tool` 命令会返回完整 `trace_id`。拿到以后输入：
+The MVP must pass these checks:
 
-```text
-/trace <trace_id>
-```
+- No email is archived without approval.
+- No email is marked read without approval.
+- No draft is created without approval.
+- No email is sent.
+- No email is deleted.
+- Trace does not store full long email bodies.
 
-预期：
+## Mock Provider Checks
 
-- 能看到 turn、tool、approval 等事件摘要
+Before real provider integration:
 
-## 注意
-
-- 当前客户端只是通过命令展示审批和 trace，后续会做更自然的 UI。
-- 如果客户端提示服务端请求失败，先确认 `server` 是否运行在 `http://127.0.0.1:8000`。
-- 如果使用自定义地址，设置 `WISPERA_SERVER_URL`。
+- mock dataset loads on Windows
+- reports are deterministic
+- email IDs are stable
+- ignored and important counts match expected labels
+- evaluation script can run without network access

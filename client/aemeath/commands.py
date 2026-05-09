@@ -310,6 +310,162 @@ def _cmd_tool(args, chat_manager):
         return _format_error(exc)
 
 
+def _cmd_email(args, chat_manager):
+    parts = args.strip().split()
+    action = parts[0].lower() if parts else "report"
+
+    try:
+        client = _server_client(chat_manager)
+        if action == "report":
+            result = client.execute_tool("email_report_important", _email_options(parts[1:]))
+            return _format_email_report(result)
+        if action == "ignored":
+            result = client.execute_tool("email_list_ignored", _email_options(parts[1:]))
+            return _format_email_ignored(result)
+        if action == "detail":
+            if len(parts) < 2:
+                return "用法: /email detail <email_id>"
+            result = client.execute_tool("email_get_detail", {"email_id": parts[1], "max_body_chars": 1200})
+            return _format_email_detail(result)
+        if action == "classify":
+            if len(parts) < 2:
+                return "用法: /email classify <email_id>"
+            result = client.execute_tool("email_classify", {"email_id": parts[1]})
+            return _format_email_classification(result)
+        return "用法: /email report|ignored|detail <id>|classify <id>"
+    except Exception as exc:
+        return _format_error(exc)
+
+
+def _email_options(tokens):
+    options = {}
+    if "--unread" in tokens:
+        options["unread_only"] = True
+    for token in tokens:
+        if token.startswith("--limit="):
+            try:
+                options["limit"] = int(token.split("=", 1)[1])
+            except ValueError:
+                pass
+    return options
+
+
+def _format_email_report(response):
+    trace_hint = _trace_hint(response)
+    if not response.get("ok"):
+        return f"邮件报告失败{trace_hint}\n{response.get('error')}"
+
+    result = response.get("result", {})
+    important = result.get("important", [])
+    lines = [
+        f"重要邮件: {result.get('important_count', len(important))}",
+        f"已忽略: {result.get('ignored_count', 0)}",
+    ]
+
+    ignored_summary = result.get("ignored_summary", {})
+    if ignored_summary:
+        summary = ", ".join(f"{key}:{value}" for key, value in ignored_summary.items())
+        lines.append(f"忽略分类: {summary}")
+
+    for index, item in enumerate(important[:6], start=1):
+        reasons = "; ".join(item.get("reasons", []))
+        lines.extend(
+            [
+                "",
+                f"{index}. [{item.get('importance')}/{item.get('category')}] {item.get('from_name')}",
+                f"主题: {item.get('subject')}",
+                f"原因: {reasons or '无'}",
+                f"建议: {item.get('suggested_action')}",
+                f"ID: {item.get('email_id')}",
+            ]
+        )
+
+    if not important:
+        lines.append("暂无需要汇报的重要邮件")
+    if trace_hint:
+        lines.append(trace_hint.strip())
+    return "\n".join(lines)
+
+
+def _format_email_ignored(response):
+    trace_hint = _trace_hint(response)
+    if not response.get("ok"):
+        return f"忽略列表失败{trace_hint}\n{response.get('error')}"
+
+    result = response.get("result", {})
+    ignored = result.get("ignored", [])
+    lines = [f"忽略邮件: {result.get('ignored_count', len(ignored))}"]
+    for index, item in enumerate(ignored[:8], start=1):
+        reasons = "; ".join(item.get("reasons", []))
+        lines.extend(
+            [
+                "",
+                f"{index}. [{item.get('category')}] {item.get('from_name')}",
+                f"主题: {item.get('subject')}",
+                f"原因: {reasons or '无'}",
+                f"ID: {item.get('email_id')}",
+            ]
+        )
+    if not ignored:
+        lines.append("暂无低优先级邮件")
+    if trace_hint:
+        lines.append(trace_hint.strip())
+    return "\n".join(lines)
+
+
+def _format_email_detail(response):
+    trace_hint = _trace_hint(response)
+    if not response.get("ok"):
+        return f"邮件详情失败{trace_hint}\n{response.get('error')}"
+
+    result = response.get("result", {})
+    email = result.get("email", {})
+    classification = result.get("classification", {})
+    body = str(email.get("body", "")).strip()
+    if len(body) > 500:
+        body = body[:500] + "..."
+    reasons = "; ".join(classification.get("reasons", []))
+    lines = [
+        f"邮件: {email.get('id')}",
+        f"来自: {email.get('from_name')} <{email.get('from_email')}>",
+        f"主题: {email.get('subject')}",
+        f"分类: {classification.get('importance')}/{classification.get('category')}",
+        f"原因: {reasons or '无'}",
+        f"建议: {classification.get('suggested_action')}",
+        "",
+        body or email.get("snippet", ""),
+    ]
+    if trace_hint:
+        lines.append(trace_hint.strip())
+    return "\n".join(lines)
+
+
+def _format_email_classification(response):
+    trace_hint = _trace_hint(response)
+    if not response.get("ok"):
+        return f"邮件分类失败{trace_hint}\n{response.get('error')}"
+
+    result = response.get("result", {})
+    email = result.get("email", {})
+    classification = result.get("classification", {})
+    reasons = "; ".join(classification.get("reasons", []))
+    lines = [
+        f"邮件: {email.get('id')}",
+        f"主题: {email.get('subject')}",
+        f"分类: {classification.get('importance')}/{classification.get('category')}",
+        f"原因: {reasons or '无'}",
+        f"建议: {classification.get('suggested_action')}",
+    ]
+    if trace_hint:
+        lines.append(trace_hint.strip())
+    return "\n".join(lines)
+
+
+def _trace_hint(response):
+    trace_id = response.get("trace_id", "")
+    return f"\nTrace: {trace_id[:8]}" if trace_id else ""
+
+
 # --- 注册内置命令 ---
 register("/help", "显示可用命令", _cmd_help)
 register("/cmd", "打开命令行", _cmd_cmd)
@@ -324,6 +480,7 @@ register("/model", "查看当前模型", _cmd_model)
 register("/server", "查看服务端状态", _cmd_server)
 register("/tools", "查看服务端工具", _cmd_tools)
 register("/tool", "手动执行工具", _cmd_tool)
+register("/email", "邮件分拣报告", _cmd_email)
 register("/pending", "查看待审批工具", _cmd_pending)
 register("/approve", "批准工具调用", _cmd_approve)
 register("/reject", "拒绝工具调用", _cmd_reject)

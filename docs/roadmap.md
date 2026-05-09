@@ -1,103 +1,139 @@
 # Roadmap
 
-## Phase 0 - 重定位与骨架
+The goal is to ship a focused interview-ready Email Triage Agent quickly, while preserving enough architecture depth to discuss tool use, safety, autonomy, memory, and evaluation.
 
-目标：在 Mac 上能继续开发服务端和通用逻辑，同时保持 Windows 客户端为唯一运行目标。
+## Phase 0 - Rescope
 
-交付物：
+Goal: replace the broad desktop AI assistant plan with a focused email triage plan.
 
-- docs 说明项目重定位
-- server 启动骨架
-- client / server 边界
-- 基础 trace / 日志
+Deliverables:
 
-验收：
+- Rewrite docs around Email Triage Agent
+- Define MVP/non-goals
+- Define safety boundaries
+- Define provider abstraction
+- Define evaluation plan
 
-- `uvicorn app.main:app` 能启动
-- `/health` 返回正常
-- 项目叙事不再被桌宠 UI 限制，Windows 客户端只是 Agent 的交互入口
+Status: complete.
 
-## Phase 1 - Tool Use
+## Phase 1 - Email Tool Foundation
 
-目标：让模型真正会选工具。
+Goal: implement email tools against mock data.
 
-交付物：
+Deliverables:
 
-- tool registry
-- schema / validation，拒绝缺字段、错类型、多余字段
-- permission gates，危险工具先进入 pending 状态
-- tool execution trace，可按 trace_id 查询
-- tool execution API，支持用户批准后继续执行
-- 3-5 个高价值本地工具
+- `MockEmailProvider` - complete
+- Mock email JSON dataset - complete
+- `email_list_recent` - complete
+- `email_search` - complete
+- `email_get_detail` - complete
+- `email_classify` - complete
+- `email_report_important` - complete
+- `email_list_ignored` - complete
+- trace for every email tool call
 
-验收：
+Acceptance:
 
-- 工具调用可在 UI 和日志里复盘
-- 危险工具需要显式确认
-- 无 API key 时仍可本地验证工具系统
+- No real email credentials required
+- `/email report` works from Windows client
+- Important/ignored decisions include reasons
+- Tests can run deterministically
 
-当前实现顺序：
+Implementation note:
 
-1. 先做工具安全边界和可观测性
-2. 再加更多本地工具
-3. 最后把 trace 展示接回客户端 UI
+- Start with a deterministic rule-based classifier before adding any LLM classification.
 
-当前状态：
+Status: implemented locally against mock data. Needs Windows client regression test after push.
 
-- 已完成 typed tool registry
-- 已完成基础 schema validation
-- 已完成 `read` / `write` / `dangerous` 权限分级
-- 已完成 dangerous tool pending approval
-- 已完成 trace 查询 API
-- 已完成 Windows 客户端命令入口接入 pending approval 和 trace 摘要
-- 当前进行中：shell command allowlist / denylist，以及手动工具执行返回 trace_id
-- 下一步：把工具调用状态做成更自然的窗口 UI
+## Phase 2 - Approval-gated Actions
 
-## Phase 2 - RAG / Memory
+Goal: safely support mailbox actions.
 
-目标：把“记住用户”做成系统，而不是靠 prompt 运气。
+Deliverables:
 
-交付物：
+- `archive_email`
+- `mark_email_read`
+- `star_email`
+- `create_draft_reply`
+- pending approval flow
+- action trace
 
-- 会话记忆
-- 用户画像记忆
-- 文档知识库
-- 写入策略
-- 检索与引用
+Acceptance:
 
-验收：
+- Write tools never execute without approval
+- Client can approve/reject action
+- Trace shows proposed action, user decision, and provider result
 
-- 能解释答案来源
-- 能删除 / 修正错误记忆
+MVP excludes:
 
-## Phase 3 - Multimodal
+- send email
+- delete email
 
-目标：让助手理解桌面场景。
+## Phase 3 - Preference Memory
 
-交付物：
+Goal: make triage adapt to the user without RAG.
 
-- 截图理解
-- OCR
-- 语音输入 / 输出
-- 选区分析
+Deliverables:
 
-验收：
+- Important sender/domain rules
+- Ignored sender/category rules
+- User feedback commands
+- Preference storage
+- Classification reasons that cite matching preferences
 
-- 对当前屏幕内容有明确回应
-- 语音和图片输入能进入同一条交互链路
+Acceptance:
 
-## Phase 4 - Post-training / Eval
+- User can mark a sender as important or ignored
+- Future reports reflect those preferences
+- Preferences are inspectable and editable
 
-目标：形成数据闭环。
+## Phase 4 - Scheduler / Autonomy
 
-交付物：
+Goal: add controlled autonomy.
 
-- 用户反馈采集
-- chosen / rejected 数据
-- 失败样本集
-- 回放与离线评估
+Deliverables:
 
-验收：
+- periodic inbox scan
+- dedupe reported emails
+- important-only notification
+- daily digest
+- scheduler trace
 
-- 能比较改动前后的表现
-- 训练或后训练有明确数据来源
+Acceptance:
+
+- The system can autonomously read and classify
+- It never mutates mailbox state without approval
+- Duplicate notifications are avoided
+
+## Phase 5 - Evaluation
+
+Goal: make quality measurable for interviews.
+
+Deliverables:
+
+- 30-50 labeled mock emails
+- expected category/importance/action labels
+- evaluation script
+- confusion summary
+- regression cases
+
+Acceptance:
+
+- Classification quality can be measured
+- Failures can be explained
+- Prompt/policy changes can be compared
+
+## Phase 6 - Real Provider
+
+Goal: connect one real email provider after the mock flow is solid.
+
+Recommended order:
+
+1. Microsoft Graph / Outlook if targeting Windows/enterprise story
+2. Gmail if targeting general user story
+
+Acceptance:
+
+- OAuth setup documented
+- Read-only flow works first
+- Write actions still go through approval

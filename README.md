@@ -1,29 +1,43 @@
 # Wispera
 
-Wispera is being rebuilt as a cross-platform desktop AI Agent prototype.
+Wispera is being rebuilt as a Windows desktop Email Triage Agent focused on tool use.
 
-The original project started as a lightweight Windows desktop pet. The current direction is broader: a local-first desktop assistant with tool use, memory/RAG, multimodal context, traceability, and an evaluation/post-training data loop.
+The original project started as a lightweight desktop pet. The new scope is deliberately smaller and deeper: Wispera reads emails through tools, filters noisy messages, reports important emails, explains its decisions, and requires user approval before any write operation.
 
-## Current Focus
+## Product Direction
 
-- Desktop UI as a lightweight entry point
-- FastAPI server as the Agent runtime
-- Tool use with schemas, execution traces, and permission boundaries
-- Memory/RAG as a first-class system, not only prompt history
-- Multimodal desktop context, starting with screenshots and audio
-- Evaluation and feedback data for later post-training
+Wispera is not a generic chatbot, RAG demo, or multimodal assistant. It is a focused AI application:
 
-See [docs/README.md](docs/README.md), [docs/architecture.md](docs/architecture.md), and [docs/roadmap.md](docs/roadmap.md).
+> A Windows desktop email triage agent that uses tools to inspect inbox state, identify important emails, ignore low-value messages, and safely propose actions.
+
+## Core Capabilities
+
+- Email inbox triage
+- Important email summary
+- Noise filtering for newsletters, promotions, and low-priority notifications
+- Explainable classification
+- Tool-use trace and audit log
+- Pending approval for write actions
+- Structured user preference memory
+- Mock email provider first, real provider later
+
+## Non-goals for the MVP
+
+- RAG knowledge base
+- Multimodal input
+- Fully autonomous sending or deleting emails
+- Cross-platform desktop client
+- Complex desktop pet animation polish
 
 ## Repository Layout
 
 ```text
-client/     Legacy desktop client (Python + tkinter)
-server/     Agent service (FastAPI)
-docs/       Relaunch notes, target architecture, roadmap
+client/     Windows desktop shell (Python + tkinter)
+server/     Agent service and tool runtime (FastAPI)
+docs/       Product plan, architecture, interview notes, test plan
 ```
 
-The current `client/` is still Windows-oriented and contains platform-specific behavior. It is kept as the legacy shell while the Agent service is rebuilt in a Mac-first, cross-platform direction.
+The Windows client is an interaction shell. Agent logic lives in the server and must remain independently testable.
 
 ## Quick Start
 
@@ -37,23 +51,11 @@ The current `client/` is still Windows-oriented and contains platform-specific b
 ```bash
 cd server
 cp .env.example .env
-
 uv sync
 uv run uvicorn app.main:app --reload
 ```
 
-Without `OPENAI_API_KEY`, the server still starts and returns fallback responses. This keeps local development unblocked.
-
-Useful endpoints:
-
-- `GET /health`
-- `GET /tools`
-- `POST /chat`
-- `POST /chat/simple`
-- `POST /clear`
-- `GET /memory`
-
-### Legacy Client
+### Windows Client
 
 ```bash
 cd client
@@ -62,13 +64,20 @@ uv sync
 uv run python main.py
 ```
 
-The legacy client now tries to call the local server first. If the server is unavailable, it falls back to direct LLM mode.
-
 ## Interview Positioning
 
 The intended project story:
 
-> Wispera is a desktop AI Agent prototype. It has a local interaction surface, typed tool use, long-term memory, desktop context awareness, and a feedback/evaluation path for future post-training.
+> I am building a Windows desktop Email Triage Agent. It uses typed tools to inspect email, classify messages, filter noise, report important items, and route write actions through approval gates. The system is designed around traceability, structured preferences, and evaluation on realistic email samples.
+
+## Docs
+
+- [Project Overview](docs/README.md)
+- [Architecture](docs/architecture.md)
+- [Roadmap](docs/roadmap.md)
+- [Email Agent Design](docs/email-agent-design.md)
+- [Interview Notes](docs/interview-tool-use.md)
+- [Windows Test Plan](docs/windows-test-plan.md)
 
 ## Credits
 
@@ -77,4 +86,3 @@ The original desktop pet code was based on [ameath](https://gitee.com/lzy-buaa-j
 ## License
 
 [MIT](LICENSE)
-

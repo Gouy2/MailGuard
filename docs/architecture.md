@@ -1,42 +1,151 @@
-# Target Architecture
+# Architecture
 
-## 目标分层
+Wispera uses a Windows client plus a local Agent service. The client should stay thin; the server owns email logic, tool execution, permissions, trace, scheduling, and evaluation hooks.
 
-- Client / UI shell
-  - Windows 桌宠入口、输入、显示、截图、语音采集、快捷操作
-- Agent service
-  - 对话编排、tool use、RAG、记忆写入、trace
-- Tool layer
-  - 本地系统能力、文件、剪贴板、日历、浏览器、截图
-- Memory layer
-  - 会话记忆、用户画像、知识库、反馈样本
-- Multimodal layer
-  - OCR、图像理解、音频转写、TTS
-- Evaluation / training layer
-  - 失败样本、偏好数据、回放、后训练数据集
+## Target Layers
 
-## 当前策略
+### Windows Client
 
-- Windows-client-first
-- Mac 仅作为当前开发环境，不作为客户端运行目标
-- 先把服务端变成稳定的能力核心
-- 桌面壳只负责交互，不承载 agent 逻辑
-- Windows-only 客户端代码允许保留，但必须通过 API 和服务端解耦
+Responsibilities:
 
-## 数据流
+- Desktop pet / tray / chat entry
+- User commands and notifications
+- Display important email reports
+- Show pending approvals
+- Send approval/rejection decisions to the server
 
-用户输入 / 截图 / 语音
--> client
--> server API
--> agent orchestration
--> tools / memory / multimodal
--> streamed response
--> client UI
+The client should not contain classification logic, provider SDK code, or mailbox mutation logic.
 
-## 设计原则
+### Agent Service
 
-- tool use 要可观测、可拒绝、可审计
-- memory 要可写可删，不能只增不减
-- multimodal 要落在桌面任务场景，不做泛化演示
-- post-training 要建立在真实交互日志和评估结果上
-- Windows 客户端可以有平台特性，但 Agent 能力必须在服务端独立可测
+Responsibilities:
+
+- Orchestrate email triage flows
+- Decide which tools to call
+- Generate important email reports
+- Explain why messages are important or ignored
+- Route write actions through approval gates
+- Store trace and evaluation records
+
+### Tool Runtime
+
+Responsibilities:
+
+- Typed tool registry
+- Schema validation
+- Permission levels
+- Pending approval queue
+- Execution trace
+- Error normalization
+
+Tool permissions:
+
+- `read`: inspect email or local state
+- `write`: update local preference memory or create non-destructive output
+- `dangerous`: mutate mailbox state or execute system commands
+
+### Email Provider Layer
+
+Initial provider:
+
+- `MockEmailProvider`
+- Loads local JSON email samples
+- Supports deterministic demos and evaluation
+
+Later providers:
+
+- Gmail API
+- Microsoft Graph / Outlook
+
+Provider interface should support:
+
+- list recent emails
+- fetch email detail
+- search emails
+- archive email
+- mark read/unread
+- star/flag email
+- create draft reply
+
+### Preference Memory
+
+This is structured memory, not RAG.
+
+Examples:
+
+- important senders
+- important domains
+- ignored senders
+- ignored categories
+- report schedule
+- user feedback on past classifications
+
+Storage can start with SQLite or JSON and later move to SQLite once write paths stabilize.
+
+### Scheduler
+
+Responsibilities:
+
+- Periodically run inbox scan
+- Avoid duplicate reports
+- Trigger notifications only for important items
+- Generate daily digest
+
+The scheduler may classify and report autonomously. It must not mutate mailbox state without approval.
+
+### Evaluation Layer
+
+Responsibilities:
+
+- Load labeled mock email samples
+- Run classifier/triage pipeline
+- Compare predicted labels with expected labels
+- Track false positives and false negatives
+- Preserve hard cases for regression tests
+
+## Data Flow
+
+Manual report:
+
+```text
+User command
+-> Windows client
+-> server / email triage endpoint
+-> email tools
+-> classifier / policy
+-> report
+-> trace
+-> client display
+```
+
+Scheduled report:
+
+```text
+Scheduler tick
+-> provider list_recent_emails
+-> classify
+-> dedupe
+-> important report
+-> client notification
+-> trace
+```
+
+Approved write action:
+
+```text
+Agent proposes action
+-> pending tool call
+-> client shows approval request
+-> user approves
+-> provider write tool executes
+-> trace records decision and result
+```
+
+## Safety Principles
+
+- Read actions may run automatically.
+- Write actions require approval.
+- Delete and send are excluded from MVP.
+- Email contents in trace must be truncated or redacted.
+- Every classification should have a reason.
+- Every ignored email should have a category/reason, at least in debug/report mode.

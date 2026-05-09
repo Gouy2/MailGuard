@@ -541,4 +541,7 @@ def build_default_registry(memory_store: MemoryStore) -> ToolRegistry:
             permission=ToolPermission.DANGEROUS,
         )
     )
+    from .email_tools import register_email_tools
+
+    register_email_tools(registry)
     return registry

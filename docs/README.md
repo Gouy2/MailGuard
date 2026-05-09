@@ -1,36 +1,73 @@
-# Wispera Relaunch Notes
+# Wispera Project Plan
 
-Wispera 现在不再按“Windows 桌宠小玩具”来理解，而是作为一个面向面试展示的桌面 AI Agent 原型来推进。
+Wispera is now scoped as a Windows desktop Email Triage Agent.
 
-客户端运行目标保持 Windows。当前在 Mac 上开发，只作为本地代码编辑和服务端验证环境；客户端功能测试由 Windows 环境完成。客户端和服务端通过 API 解耦，确保 Agent 能力不被 Windows UI 绑定。
+The project should be small enough to finish, but deep enough to defend in an AI application development interview. The core bet is that a focused tool-use email workflow is stronger than a broad demo with RAG, multimodal input, post-training, and desktop animation all partially implemented.
 
-## 当前定位
+## One-sentence Pitch
 
-- 桌面入口：轻量、常驻、可交互
-- 核心能力：tool use、RAG、multimodal、memory、evaluation
-- 产品叙事：local-first Windows desktop AI assistant / agent
-- 演示重点：不是“会聊天”，而是“能感知上下文并执行任务”
+Wispera reads email through tools, filters noise, reports important messages, explains why each message matters, and asks for approval before taking any write action.
 
-## 保留的部分
+## Current Scope
 
-- 角色感和陪伴感
-- 流式对话
-- 本地配置和轻量交互
-- 桌面 UI 作为入口，而不是产品全部
+In scope:
 
-## 暂时不优先的部分
+- Tool-use-first agent runtime
+- Email provider abstraction
+- Mock email provider for fast development
+- Important email report
+- Ignored/noise email report
+- Email detail inspection
+- Structured preference memory
+- Pending approval for write actions
+- Trace/audit log
+- Evaluation set based on labeled mock emails
+- Windows desktop client as the interaction shell
 
-- 将客户端重写成跨平台壳
-- 追求完整桌宠动画细节而牺牲 Agent 能力
-- 在没有数据和评估闭环前做 post-training
+Out of scope for now:
 
-## 面试表达
+- RAG knowledge base
+- Multimodal input
+- Post-training
+- Autonomous email deletion
+- Autonomous email sending
+- Cross-platform client rewrite
 
-这个项目更适合这样讲：
+## Product Behavior
 
-> 我做了一个桌面 AI Agent 原型。它有本地交互入口、工具调用、长期记忆、桌面上下文感知和多模态输入输出，并且我设计了后续的数据采集、评估和后训练闭环。
+The agent may automatically:
 
-## 相关文档
+- Fetch recent emails
+- Classify emails
+- Generate important email summaries
+- Report urgent/action-required messages
+- Update internal preference memory from explicit user feedback
+
+The agent must ask approval before:
+
+- Archiving email
+- Marking email as read
+- Starring or flagging email
+- Creating a draft reply
+- Applying a preference rule that affects future classification
+
+The MVP must not:
+
+- Send emails automatically
+- Delete emails automatically
+- Modify mailbox state without approval
+
+## Interview Story
+
+The strongest interview framing:
+
+> I intentionally narrowed the project to one high-value workflow: email triage. That let me show real tool use, safety boundaries, auditability, background automation, preference memory, and evaluation, instead of spreading effort across many AI features.
+
+## Document Map
 
 - [Architecture](architecture.md)
 - [Roadmap](roadmap.md)
+- [Email Agent Design](email-agent-design.md)
+- [Email Implementation Notes](interview-email-implementation.md)
+- [Interview Tool-use Notes](interview-tool-use.md)
+- [Windows Test Plan](windows-test-plan.md)
