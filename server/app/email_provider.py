@@ -29,6 +29,11 @@ class EmailMessage:
     has_attachments: bool = False
     expected_category: str | None = None
     expected_importance: str | None = None
+    expected_action: str | None = None
+    expected_reportable: bool | None = None
+    expected_ignored: bool | None = None
+    difficulty: str = ""
+    notes: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EmailMessage":
@@ -47,6 +52,11 @@ class EmailMessage:
             has_attachments=bool(data.get("has_attachments", False)),
             expected_category=data.get("expected_category"),
             expected_importance=data.get("expected_importance"),
+            expected_action=data.get("expected_action"),
+            expected_reportable=data.get("expected_reportable"),
+            expected_ignored=data.get("expected_ignored"),
+            difficulty=str(data.get("difficulty", "")),
+            notes=str(data.get("notes", "")),
         )
 
     def summary_dict(self) -> dict[str, Any]:

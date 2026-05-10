@@ -1,87 +1,127 @@
 # Wispera
 
-Wispera is being rebuilt as a Windows desktop Email Triage Agent focused on tool use.
+Wispera 当前正在重构为一个 Windows 桌面邮件分拣 Agent。
 
-The original project started as a lightweight desktop pet. The new scope is deliberately smaller and deeper: Wispera reads emails through tools, filters noisy messages, reports important emails, explains its decisions, and requires user approval before any write operation.
+项目重点不是桌宠外观，也不是通用聊天机器人，而是围绕邮件管理这个具体场景，展示 AI 应用开发中的核心能力：
 
-## Product Direction
+- tool use
+- typed tool registry
+- approval-gated actions
+- trace
+- 结构化偏好记忆
+- scheduler / autonomy
+- evaluation
 
-Wispera is not a generic chatbot, RAG demo, or multimodal assistant. It is a focused AI application:
+一句话介绍：
 
-> A Windows desktop email triage agent that uses tools to inspect inbox state, identify important emails, ignore low-value messages, and safely propose actions.
+> Wispera 是一个邮件分拣 Agent：它通过工具读取邮件、过滤广告和低价值消息、汇报重要邮件，并在任何邮箱写操作前要求用户审批。
 
-## Core Capabilities
+## 当前状态
 
-- Email inbox triage
-- Important email summary
-- Noise filtering for newsletters, promotions, and low-priority notifications
-- Explainable classification
-- Tool-use trace and audit log
-- Pending approval for write actions
-- Structured user preference memory
-- Mock email provider first, real provider later
+已实现：
 
-## Non-goals for the MVP
+- Mock 邮件 provider
+- 邮件读取、搜索、详情、分类、重要邮件报告
+- 归档、标记已读、加星、创建草稿的审批流
+- 结构化偏好记忆
+- Headless scheduler 和 notification outbox
+- Mock 数据评估框架
+- LLM shadow eval on mock data
+- Evaluation report export
+- Opt-in SQLite 状态持久化
+- Windows 客户端命令入口
 
-- RAG knowledge base
-- Multimodal input
-- Fully autonomous sending or deleting emails
-- Cross-platform desktop client
-- Complex desktop pet animation polish
+尚未实现：
 
-## Repository Layout
+- Outlook / Microsoft Graph read-only provider
+- OAuth read-only flow
+- Windows 原生通知 UI
+- 后台定时任务
+
+## 目录结构
 
 ```text
-client/     Windows desktop shell (Python + tkinter)
-server/     Agent service and tool runtime (FastAPI)
-docs/       Product plan, architecture, interview notes, test plan
+client/     Windows 桌面客户端，当前作为薄交互壳
+server/     FastAPI 服务端，承载 Agent runtime 和邮件能力
+docs/       中文项目文档
+tests/      服务端回归测试
 ```
 
-The Windows client is an interaction shell. Agent logic lives in the server and must remain independently testable.
+## 快速启动
 
-## Quick Start
-
-### Requirements
-
-- Python >= 3.12
-- uv or pip
-
-### Server
+### 服务端
 
 ```bash
 cd server
-cp .env.example .env
 uv sync
 uv run uvicorn app.main:app --reload
 ```
 
-### Windows Client
+### Windows 客户端
 
 ```bash
 cd client
-cp .env.example .env
 uv sync
 uv run python main.py
 ```
 
-## Interview Positioning
+## 测试
 
-The intended project story:
+在项目根目录运行：
 
-> I am building a Windows desktop Email Triage Agent. It uses typed tools to inspect email, classify messages, filter noise, report important items, and route write actions through approval gates. The system is designed around traceability, structured preferences, and evaluation on realistic email samples.
+```bash
+python3 -m unittest tests.test_email_tools
+```
 
-## Docs
+运行 mock evaluation：
 
-- [Project Overview](docs/README.md)
-- [Architecture](docs/architecture.md)
-- [Roadmap](docs/roadmap.md)
-- [Email Agent Design](docs/email-agent-design.md)
-- [Interview Notes](docs/interview-tool-use.md)
-- [Windows Test Plan](docs/windows-test-plan.md)
+```bash
+cd server
+uv run python evaluate_email.py --classifier rule --limit 36
+```
+
+运行 LLM shadow evaluation：
+
+```bash
+cd server
+uv run python evaluate_email.py --classifier llm --limit 1
+```
+
+## LLM API
+
+LLM shadow eval 需要 API key，但不要写入代码。
+
+建议通过 `server/.env` 或环境变量配置：
+
+```bash
+OPENAI_API_KEY=...
+OPENAI_MODEL=...
+OPENAI_BASE_URL=...
+```
+
+如果使用 OpenAI 官方 API，可以不设置 `OPENAI_BASE_URL`。
+
+## 文档
+
+- [文档总览](docs/README.md)
+- [开发接手指南](docs/development-handoff.md)
+- [项目总览](docs/project-overview.md)
+- [系统架构](docs/architecture.md)
+- [实现难点与细节](docs/implementation-details.md)
+- [测试与评估](docs/testing-and-evaluation.md)
+- [面试说明](docs/interview-guide.md)
+- [后续计划](docs/roadmap.md)
+- [Windows 验证计划](docs/windows-test-plan.md)
+
+## 面试定位
+
+推荐这样介绍：
+
+> 我把一个桌宠项目重构为 Windows 桌面邮件分拣 Agent。服务端通过 typed tools 读取和处理邮件，危险操作必须审批，所有工具调用都有 trace，并且有结构化偏好记忆、scheduler 和评估框架。项目重点是 AI Agent 在真实任务中的工具调用、安全边界和可评估性。
 
 ## Credits
 
-The original desktop pet code was based on [ameath](https://gitee.com/lzy-buaa-jdi/ameath).
+原始桌宠代码基于 [ameath](https://gitee.com/lzy-buaa-jdi/ameath)。
 
 ## License
 

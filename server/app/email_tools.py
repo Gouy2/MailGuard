@@ -5,12 +5,23 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from .email_eval import evaluate_email_classifier
+from .email_eval_report import write_eval_report
 from .email_provider import EmailMessage, EmailProvider, MockEmailProvider
-from .tools import ToolContext, ToolPermission, ToolRegistry, ToolSpec
+from .email_scheduler import (
+    email_daily_digest,
+    email_scheduler_state,
+    list_email_notifications,
+    mark_email_notification_read,
+    run_email_scan,
+)
+from .llm_email_classifier import LLMEmailClassifier
+from .tools import ToolContext, ToolPermission, ToolRegistry, ToolSpec, _normalize_relative_path
 
 
 LOW_VALUE_CATEGORIES = {"newsletter", "promotion", "noise"}
 REPORTABLE_IMPORTANCE = {"high", "medium"}
+REPORT_OUTPUT_ROOT = "docs/test-logs"
 
 SECURITY_TERMS = (
     "security",
@@ -28,6 +39,9 @@ FINANCE_TERMS = (
     "payout",
     "finance",
     "stripe",
+    "receipt",
+    "renewal",
+    "subscription",
 )
 ACTION_TERMS = (
     "action required",
@@ -48,6 +62,8 @@ DEADLINE_TERMS = (
     "by ",
     "deadline",
     "4 pm",
+    "5 pm",
+    "friday",
 )
 MEETING_TERMS = (
     "meeting",
@@ -57,7 +73,8 @@ MEETING_TERMS = (
     "changed",
     "canceled",
     "cancelled",
-    "available",
+    "reminder:",
+    "1:1",
 )
 RECRUITING_TERMS = (
     "interview",
@@ -94,6 +111,11 @@ NOTIFICATION_TERMS = (
     "workflow run",
     "failed on main",
     "notification",
+    "incident triggered",
+    "production alert",
+    "latency alert",
+    "alert recovered",
+    "replica lag",
 )
 BULK_LOCAL_PARTS = (
     "noreply",
@@ -275,6 +297,143 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
             "operation": "set",
             "key": key,
             "preferences": preferences,
+        }
+
+    def email_scheduler_run_once(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        limit = _bounded_int(args.get("limit"), default=20, minimum=1, maximum=100)
+        unread_only = bool(args.get("unread_only", True))
+        important_only = bool(args.get("important_only", True))
+        return {
+            "provider": type(email_provider).__name__,
+            "scheduler": run_email_scan(
+                provider=email_provider,
+                memory_store=context.memory_store,
+                session_id=context.session_id,
+                classifier=classify_email,
+                limit=limit,
+                unread_only=unread_only,
+                important_only=important_only,
+            ),
+        }
+
+    def email_notifications(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        limit = _bounded_int(args.get("limit"), default=20, minimum=1, maximum=100)
+        include_read = bool(args.get("include_read", False))
+        return list_email_notifications(
+            memory_store=context.memory_store,
+            session_id=context.session_id,
+            include_read=include_read,
+            limit=limit,
+        )
+
+    def email_notification_mark_read(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        notification_id = _required_string(args, "notification_id")
+        return mark_email_notification_read(
+            memory_store=context.memory_store,
+            session_id=context.session_id,
+            notification_id=notification_id,
+        )
+
+    def email_daily_digest_tool(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        limit = _bounded_int(args.get("limit"), default=50, minimum=1, maximum=200)
+        return email_daily_digest(memory_store=context.memory_store, session_id=context.session_id, limit=limit)
+
+    def email_scheduler_state_tool(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        return email_scheduler_state(memory_store=context.memory_store, session_id=context.session_id)
+
+    def email_eval_mock(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        limit = _bounded_int(args.get("limit"), default=100, minimum=1, maximum=500)
+        include_rows = bool(args.get("include_rows", False))
+        evaluation = evaluate_email_classifier(
+            provider=MockEmailProvider(),
+            classifier=classify_email,
+            preferences=context.memory_store.email_preferences(context.session_id),
+            limit=limit,
+        )
+        return _compact_evaluation(evaluation, include_rows=include_rows)
+
+    def email_eval_llm_shadow(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        limit = _bounded_int(args.get("limit"), default=12, minimum=1, maximum=50)
+        model = str(args.get("model", "")).strip() or None
+        continue_on_error = bool(args.get("continue_on_error", False))
+        include_rows = bool(args.get("include_rows", False))
+        timeout = _bounded_float(args.get("timeout"), default=30.0, minimum=5.0, maximum=120.0)
+        max_retries = _bounded_int(args.get("max_retries"), default=1, minimum=0, maximum=3)
+        classifier = LLMEmailClassifier(model=model, timeout=timeout, max_retries=max_retries)
+        evaluation = evaluate_email_classifier(
+            provider=MockEmailProvider(),
+            classifier=classifier.classify,
+            preferences=context.memory_store.email_preferences(context.session_id),
+            limit=limit,
+            continue_on_error=continue_on_error,
+        )
+        return {
+            "classifier": "llm_shadow",
+            "model": classifier.model,
+            "timeout": timeout,
+            "max_retries": max_retries,
+            "provider": "MockEmailProvider",
+            "mailbox_mutation": False,
+            "evaluation": _compact_evaluation(evaluation, include_rows=include_rows),
+        }
+
+    def email_eval_report(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        classifier_name = str(args.get("classifier", "rule")).strip().lower()
+        if classifier_name not in {"rule", "llm"}:
+            raise ValueError("classifier must be rule or llm")
+        limit = _bounded_int(args.get("limit"), default=36, minimum=1, maximum=50)
+        report_format = str(args.get("format", "markdown")).strip().lower()
+        output_path = str(args.get("output_path", "docs/test-logs/latest-email-eval-report.md")).strip()
+        if not output_path:
+            raise ValueError("output_path is required")
+        include_rows = bool(args.get("include_rows", False))
+
+        if classifier_name == "llm":
+            model = str(args.get("model", "")).strip() or None
+            continue_on_error = bool(args.get("continue_on_error", True))
+            timeout = _bounded_float(args.get("timeout"), default=60.0, minimum=5.0, maximum=120.0)
+            max_retries = _bounded_int(args.get("max_retries"), default=2, minimum=0, maximum=3)
+            llm_classifier = LLMEmailClassifier(model=model, timeout=timeout, max_retries=max_retries)
+            evaluation = evaluate_email_classifier(
+                provider=MockEmailProvider(),
+                classifier=llm_classifier.classify,
+                preferences=context.memory_store.email_preferences(context.session_id),
+                limit=limit,
+                continue_on_error=continue_on_error,
+            )
+            evaluation["classifier"] = "llm_shadow"
+            evaluation["model"] = llm_classifier.model
+            evaluation["timeout"] = timeout
+            evaluation["max_retries"] = max_retries
+            evaluation["provider"] = "MockEmailProvider"
+            evaluation["mailbox_mutation"] = False
+        else:
+            evaluation = evaluate_email_classifier(
+                provider=MockEmailProvider(),
+                classifier=classify_email,
+                preferences=context.memory_store.email_preferences(context.session_id),
+                limit=limit,
+            )
+            evaluation["classifier"] = "rule"
+            evaluation["provider"] = "MockEmailProvider"
+            evaluation["mailbox_mutation"] = False
+
+        report_output_path = _validated_report_output_path(output_path, context.workspace_root)
+        report_path = write_eval_report(
+            evaluation,
+            output_path=report_output_path,
+            report_format=report_format,
+        )
+        return {
+            "report": {
+                "path": str(report_path.relative_to(context.workspace_root)),
+                "format": report_format,
+            },
+            "classifier": evaluation["classifier"],
+            "model": evaluation.get("model", ""),
+            "provider": evaluation["provider"],
+            "mailbox_mutation": False,
+            "evaluation": _compact_evaluation(evaluation, include_rows=include_rows),
         }
 
     registry.register(
@@ -466,6 +625,234 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
     )
     registry.register(
         ToolSpec(
+            name="email_scheduler_run_once",
+            description="Run one headless email scheduler scan and create deduplicated notifications for important unread mail.",
+            input_schema=_schema(
+                {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of recent emails to scan.",
+                        "default": 20,
+                        "minimum": 1,
+                        "maximum": 100,
+                    },
+                    "unread_only": {
+                        "type": "boolean",
+                        "description": "Only scan unread emails.",
+                        "default": True,
+                    },
+                    "important_only": {
+                        "type": "boolean",
+                        "description": "Only notify high-importance reportable emails.",
+                        "default": True,
+                    },
+                }
+            ),
+            handler=email_scheduler_run_once,
+            permission=ToolPermission.READ,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_notifications",
+            description="List pending email notifications created by scheduler scans.",
+            input_schema=_schema(
+                {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum notifications to return.",
+                        "default": 20,
+                        "minimum": 1,
+                        "maximum": 100,
+                    },
+                    "include_read": {
+                        "type": "boolean",
+                        "description": "Include notifications already marked read.",
+                        "default": False,
+                    },
+                }
+            ),
+            handler=email_notifications,
+            permission=ToolPermission.READ,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_notification_mark_read",
+            description="Mark a local scheduler notification as read. This does not mutate the mailbox.",
+            input_schema=_schema(
+                {
+                    "notification_id": {"type": "string", "description": "Notification id from email_notifications."},
+                },
+                required=["notification_id"],
+            ),
+            handler=email_notification_mark_read,
+            permission=ToolPermission.WRITE,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_daily_digest",
+            description="Build a digest from local scheduler notification history.",
+            input_schema=_schema(
+                {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum historical notifications to include.",
+                        "default": 50,
+                        "minimum": 1,
+                        "maximum": 200,
+                    },
+                }
+            ),
+            handler=email_daily_digest_tool,
+            permission=ToolPermission.READ,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_scheduler_state",
+            description="Inspect local scheduler dedupe and scan state.",
+            input_schema=_schema({}),
+            handler=email_scheduler_state_tool,
+            permission=ToolPermission.READ,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_eval_mock",
+            description="Evaluate the deterministic email classifier against labeled mock emails.",
+            input_schema=_schema(
+                {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum labeled mock emails to evaluate.",
+                        "default": 100,
+                        "minimum": 1,
+                        "maximum": 500,
+                    },
+                    "include_rows": {
+                        "type": "boolean",
+                        "description": "Include per-email rows. Defaults to false to keep tool results compact.",
+                        "default": False,
+                    },
+                }
+            ),
+            handler=email_eval_mock,
+            permission=ToolPermission.READ,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_eval_llm_shadow",
+            description="Run LLM shadow evaluation on labeled mock emails without touching a real mailbox.",
+            input_schema=_schema(
+                {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum labeled mock emails to evaluate. Keep small for API smoke tests.",
+                        "default": 12,
+                        "minimum": 1,
+                        "maximum": 50,
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Optional model override. Defaults to OPENAI_MODEL.",
+                    },
+                    "continue_on_error": {
+                        "type": "boolean",
+                        "description": "Record per-email classifier errors instead of aborting immediately.",
+                        "default": False,
+                    },
+                    "include_rows": {
+                        "type": "boolean",
+                        "description": "Include per-email rows. Defaults to false to keep tool results compact.",
+                        "default": False,
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Per-request LLM timeout in seconds.",
+                        "default": 30.0,
+                        "minimum": 5.0,
+                        "maximum": 120.0,
+                    },
+                    "max_retries": {
+                        "type": "integer",
+                        "description": "Retry count for retryable LLM request failures.",
+                        "default": 1,
+                        "minimum": 0,
+                        "maximum": 3,
+                    },
+                }
+            ),
+            handler=email_eval_llm_shadow,
+            permission=ToolPermission.READ,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_eval_report",
+            description="Write a compact evaluation report for mock email triage results.",
+            input_schema=_schema(
+                {
+                    "classifier": {
+                        "type": "string",
+                        "description": "Classifier to evaluate: rule or llm.",
+                        "default": "rule",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum labeled mock emails to evaluate.",
+                        "default": 36,
+                        "minimum": 1,
+                        "maximum": 50,
+                    },
+                    "format": {
+                        "type": "string",
+                        "description": "Report format: markdown or json.",
+                        "default": "markdown",
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Workspace-relative path for the report file.",
+                        "default": "docs/test-logs/latest-email-eval-report.md",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Optional LLM model override when classifier is llm.",
+                    },
+                    "continue_on_error": {
+                        "type": "boolean",
+                        "description": "Record per-email LLM classifier errors instead of aborting.",
+                        "default": True,
+                    },
+                    "include_rows": {
+                        "type": "boolean",
+                        "description": "Include per-email rows in tool result. The written report always stays compact.",
+                        "default": False,
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Per-request LLM timeout in seconds when classifier is llm.",
+                        "default": 60.0,
+                        "minimum": 5.0,
+                        "maximum": 120.0,
+                    },
+                    "max_retries": {
+                        "type": "integer",
+                        "description": "Retry count for retryable LLM failures when classifier is llm.",
+                        "default": 2,
+                        "minimum": 0,
+                        "maximum": 3,
+                    },
+                }
+            ),
+            handler=email_eval_report,
+            permission=ToolPermission.WRITE,
+        )
+    )
+    registry.register(
+        ToolSpec(
             name="email_archive",
             description="Archive one email. This mutates mailbox state and requires approval.",
             input_schema=_schema(
@@ -574,6 +961,8 @@ def classify_email(email: EmailMessage, preferences: dict[str, Any] | None = Non
         negative_signals.append("social digest/noise signal")
 
     category = _choose_category(text, labels, positive_signals, negative_signals)
+    if category == "notification" and "asks for action" in positive_signals and "deadline or time-sensitive wording" in positive_signals:
+        category = "action_required"
     if category in _normalized_preferences(preferences, "ignored_categories"):
         preference_signals["ignored_category"].append(category)
         preference_signals["ignored"].append(f"ignored category preference: {category}")
@@ -647,18 +1036,20 @@ def _choose_category(
 ) -> str:
     if _has_any(text, SECURITY_TERMS) or "security" in labels:
         return "security"
-    if _has_any(text, FINANCE_TERMS) or "finance" in labels:
-        return "finance"
-    if _has_any(text, RECRUITING_TERMS):
-        return "action_required"
-    if _has_any(text, MEETING_TERMS) or "calendar" in labels:
-        return "meeting"
     if _has_any(text, PROMOTION_TERMS) or "promotion" in labels:
         return "promotion"
     if _has_any(text, SOCIAL_NOISE_TERMS) or "social" in labels:
         return "noise"
     if _has_any(text, NEWSLETTER_TERMS) or "newsletter" in labels:
         return "newsletter"
+    if _has_any(text, RECRUITING_TERMS):
+        return "action_required"
+    if _has_any(text, MEETING_TERMS) or "calendar" in labels:
+        return "meeting"
+    if (_has_any(text, NOTIFICATION_TERMS) or "notification" in labels) and "finance" not in labels:
+        return "notification"
+    if _has_any(text, FINANCE_TERMS) or "finance" in labels:
+        return "finance"
     if _has_any(text, NOTIFICATION_TERMS) or "notification" in labels:
         return "notification"
     if "asks for action" in positive_signals:
@@ -673,10 +1064,10 @@ def _choose_importance(category: str, positive_signals: list[str], negative_sign
         return "low"
     if category in {"security", "finance", "action_required"}:
         return "high"
-    if "deadline or time-sensitive wording" in positive_signals:
-        return "high"
     if category in {"meeting", "notification"}:
         return "medium"
+    if "deadline or time-sensitive wording" in positive_signals:
+        return "high"
     if positive_signals and not negative_signals:
         return "medium"
     return "low"
@@ -691,6 +1082,10 @@ def _suggest_action(category: str, text: str) -> str:
         return "review"
     if category in LOW_VALUE_CATEGORIES:
         return "ignore"
+    if category == "action_required" and "availability" in text and ("interview" in text or "next round" in text):
+        return "schedule"
+    if category == "action_required" and ("could you send" in text or "can you send" in text or "share " in text):
+        return "reply"
     if "review" in text:
         return "review"
     if "schedule" in text or "available" in text:
@@ -713,6 +1108,15 @@ def _report_item(email: EmailMessage, decision: dict[str, Any]) -> dict[str, Any
         "suggested_action": decision["suggested_action"],
         "reasons": decision["reasons"],
     }
+
+
+def _compact_evaluation(evaluation: dict[str, Any], *, include_rows: bool) -> dict[str, Any]:
+    if include_rows:
+        return evaluation
+    compact = dict(evaluation)
+    rows = compact.pop("rows", [])
+    compact["rows_omitted"] = len(rows)
+    return compact
 
 
 def _email_text(email: EmailMessage) -> str:
@@ -825,6 +1229,26 @@ def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int
     else:
         number = int(value)
     return max(minimum, min(maximum, number))
+
+
+def _bounded_float(value: Any, *, default: float, minimum: float, maximum: float) -> float:
+    if value is None:
+        number = default
+    else:
+        number = float(value)
+    return max(minimum, min(maximum, number))
+
+
+def _validated_report_output_path(output_path: str, workspace_root) -> Any:
+    target = _normalize_relative_path(output_path, workspace_root)
+    report_root = _normalize_relative_path(REPORT_OUTPUT_ROOT, workspace_root)
+    if report_root not in target.parents and target != report_root:
+        raise ValueError(f"output_path must be under {REPORT_OUTPUT_ROOT}")
+    if target.exists() and target.suffix.lower() not in {".md", ".json"}:
+        raise ValueError("report output can only overwrite markdown or json files")
+    if target.suffix.lower() not in {".md", ".json"}:
+        raise ValueError("report output must end with .md or .json")
+    return target
 
 
 def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:

@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .redaction import redact_for_trace
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -45,14 +47,16 @@ class TraceLogger:
                 payload={
                     "session_id": session_id,
                     "mode": mode,
-                    "user_message": user_message,
+                    "user_message": redact_for_trace({"content": user_message})["content"],
                 },
             )
         )
         return trace_id
 
     def log(self, event: TraceEvent) -> None:
-        self._append(event.trace_id, asdict(event))
+        record = asdict(event)
+        record["payload"] = redact_for_trace(record.get("payload", {}))
+        self._append(event.trace_id, record)
 
     def log_event(self, trace_id: str, event: str, payload: dict[str, Any] | None = None) -> None:
         self._append(
@@ -61,7 +65,7 @@ class TraceLogger:
                 "trace_id": trace_id,
                 "event": event,
                 "timestamp": _now(),
-                "payload": payload or {},
+                "payload": redact_for_trace(payload or {}),
             },
         )
 
@@ -78,10 +82,10 @@ class TraceLogger:
             "turn_end",
             {
                 "status": status,
-                "assistant_text": assistant_text,
-                "tool_calls": tool_calls,
-            },
-        )
+                    "assistant_text": redact_for_trace({"content": assistant_text})["content"],
+                    "tool_calls": tool_calls,
+                },
+            )
 
     def read_trace(self, trace_id: str) -> list[dict[str, Any]]:
         path = self.trace_dir / f"{trace_id}.jsonl"

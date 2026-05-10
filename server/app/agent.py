@@ -9,6 +9,9 @@ from typing import TYPE_CHECKING, Any, Iterable
 
 from .memory import MemoryStore
 from .prompts import build_system_prompt
+from .redaction import redact_for_trace
+from .runtime_env import SERVER_ROOT, load_server_env
+from .sqlite_state import SQLiteStateStore
 from .tools import ToolContext, ToolRegistry, build_default_registry
 from .tracer import TraceLogger
 
@@ -29,17 +32,19 @@ def _sse_event(event: str, payload: dict[str, Any]) -> str:
 
 
 def _openai_client() -> "OpenAI | None":
+    load_server_env()
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         return None
     from openai import OpenAI
 
-    base_url = os.environ.get("OPENAI_BASE_URL") or None
+    base_url = os.environ.get("OPENAI_BASE_URL", "").strip() or None
     return OpenAI(api_key=api_key, base_url=base_url)
 
 
 def _model_name() -> str:
-    return os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    load_server_env()
+    return (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
 
 
 def _safe_json_loads(raw: str) -> dict[str, Any]:
@@ -60,7 +65,10 @@ class AgentRuntime:
 
     @classmethod
     def create(cls) -> "AgentRuntime":
-        memory_store = MemoryStore()
+        load_server_env()
+        state_db = os.environ.get("WISPERA_STATE_DB", "").strip()
+        state_store = SQLiteStateStore(_state_db_path(state_db)) if state_db else None
+        memory_store = MemoryStore(state_store=state_store)
         tool_registry = build_default_registry(memory_store)
         tracer = TraceLogger()
         return cls(memory_store=memory_store, tool_registry=tool_registry, tracer=tracer)
@@ -80,6 +88,9 @@ class AgentRuntime:
 
     def clear(self, session_id: str | None = None) -> None:
         self.memory_store.clear(session_id)
+
+    def close(self) -> None:
+        self.memory_store.close()
 
     def memory_snapshot(self, session_id: str | None = None, limit: int = 20) -> dict[str, Any]:
         if session_id is None:
@@ -118,15 +129,27 @@ class AgentRuntime:
             }
 
         pending = pending_items[0]
+        pending_call = self.tool_registry.pop_pending(pending_tool_call_id)
+        if pending_call is None:
+            return {
+                "ok": False,
+                "error": "pending tool call not found",
+                "pending_tool_call_id": pending_tool_call_id,
+            }
         context = ToolContext(
-            session_id=pending["session_id"],
+            session_id=pending_call.session_id,
             memory_store=self.memory_store,
-            trace_id=pending["trace_id"],
+            trace_id=pending_call.trace_id,
         )
-        result = self.tool_registry.approve(pending_tool_call_id, context)
-        if pending["trace_id"]:
+        result = self.tool_registry.execute(
+            pending_call.tool_name,
+            pending_call.arguments,
+            context,
+            approval="approved",
+        )
+        if pending_call.trace_id:
             self.tracer.log_event(
-                pending["trace_id"],
+                pending_call.trace_id,
                 "tool_approval",
                 {
                     "pending_tool_call_id": pending_tool_call_id,
@@ -135,7 +158,7 @@ class AgentRuntime:
                 },
             )
             self.tracer.finish_turn(
-                pending["trace_id"],
+                pending_call.trace_id,
                 status="ok" if result.get("ok") else "error",
                 tool_calls=1,
             )
@@ -184,7 +207,7 @@ class AgentRuntime:
             "tool_result",
             {
                 "tool": name,
-                "arguments": arguments,
+                "arguments": redact_for_trace(arguments),
                 "result": result,
             },
         )
@@ -315,7 +338,7 @@ class AgentRuntime:
                         "tool_call",
                         {
                             "tool": tool_call.function.name,
-                            "arguments": arguments,
+                            "arguments": redact_for_trace(arguments),
                             "tool_call_id": tool_call.id,
                         },
                     )
@@ -355,3 +378,15 @@ class AgentRuntime:
             return self._fallback_reply("agent", ""), tool_calls_total
 
         return "我暂时没法把任务收束成一个结果。", tool_calls_total
+
+
+def _state_db_path(raw_path: str) -> str:
+    if raw_path.startswith("~/") or os.path.isabs(raw_path):
+        return os.path.expanduser(raw_path)
+    relative = raw_path
+    server_prefix = f"{SERVER_ROOT.name}{os.sep}"
+    if relative == SERVER_ROOT.name:
+        relative = "."
+    elif relative.startswith(server_prefix):
+        relative = relative[len(server_prefix) :]
+    return str((SERVER_ROOT / relative).resolve())

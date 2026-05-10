@@ -13,6 +13,7 @@ class ServerClient:
     def __init__(self, base_url: str | None = None, session_id: str = "default"):
         self.base_url = (base_url or os.environ.get("WISPERA_SERVER_URL") or "http://127.0.0.1:8000").rstrip("/")
         self.session_id = session_id
+        self.auth_token = os.environ.get("WISPERA_AUTH_TOKEN", "").strip()
         self._cancelled = False
 
     def cancel(self):
@@ -31,7 +32,7 @@ class ServerClient:
                 request = urllib.request.Request(
                     f"{self.base_url}/chat",
                     data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
+                    headers=self._headers(),
                     method="POST",
                 )
                 full_text = ""
@@ -100,14 +101,19 @@ class ServerClient:
         return self._get_json(f"/traces/{trace_id}")
 
     def _get_json(self, path: str) -> dict:
-        with urllib.request.urlopen(f"{self.base_url}{path}", timeout=5) as response:
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            headers=self._headers(include_content_type=False),
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def _post_json(self, path: str, payload: dict) -> dict:
         request = urllib.request.Request(
             f"{self.base_url}{path}",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=self._headers(),
             method="POST",
         )
         try:
@@ -115,3 +121,11 @@ class ServerClient:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             raise RuntimeError(exc.read().decode("utf-8")) from exc
+
+    def _headers(self, *, include_content_type: bool = True) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if include_content_type:
+            headers["Content-Type"] = "application/json"
+        if self.auth_token:
+            headers["Authorization"] = f"Bearer {self.auth_token}"
+        return headers

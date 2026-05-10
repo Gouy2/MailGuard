@@ -1,143 +1,109 @@
-# Roadmap
+# 后续计划
 
-The goal is to ship a focused interview-ready Email Triage Agent quickly, while preserving enough architecture depth to discuss tool use, safety, autonomy, memory, and evaluation.
+## 已完成
 
-## Phase 0 - Rescope
+- Phase 1：Mock 邮件工具基础。
+- Phase 2：邮箱写操作审批流。
+- Phase 3：结构化偏好记忆。
+- Phase 4：Headless scheduler / autonomy。
+- Phase 5A-5E：Mock eval、LLM shadow eval、扩展 mock 数据、评估报告导出。
+- Phase 7A：Opt-in SQLite persistence。
+- Phase 7B：Server hardening，包括 API token、开发工具默认关闭、trace/pending 脱敏、eval report 输出限制、provider factory、运行时锁和 scheduler 原子去重。
 
-Goal: replace the broad desktop AI assistant plan with a focused email triage plan.
+当前项目已经具备可面试展示的服务端 Agent 主干：tool registry、permission gate、approval flow、邮件分类、scheduler、trace、eval、LLM shadow eval、SQLite 状态持久化。
 
-Deliverables:
+## 已完成：安全硬化
 
-- Rewrite docs around Email Triage Agent
-- Define MVP/non-goals
-- Define safety boundaries
-- Define provider abstraction
-- Define evaluation plan
+在 Phase 6A 真实邮箱 read-only provider 之前，已完成服务端安全边界收紧：
 
-Status: complete.
+- `WISPERA_AUTH_TOKEN` 保护除 `/health` 外的 API。
+- 开发工具默认关闭，只在 `WISPERA_DEV_TOOLS=1` 时注册。
+- 文件工具拒绝读取 `.env`、trace、虚拟环境和 lock 文件。
+- shell 工具拒绝控制符、重定向、管道和 Python 任意代码执行。
+- trace 和 pending approval 只保存/返回脱敏摘要。
+- `email_eval_report` 只能写入 `docs/test-logs/`。
+- mock eval 永远使用 `MockEmailProvider`，避免真实 provider 上线后误读真实邮箱。
+- Docker 镜像包含 mock 数据，并默认只绑定 localhost。
+- `WISPERA_EMAIL_PROVIDER` 现在由 provider factory 统一解析，当前只接受 `mock`。
+- `MemoryStore` / `ToolRegistry` 加入进程内锁。
+- scheduler notification 创建改为原子去重；SQLite 模式下跨 runtime 共享 DB 也由唯一约束和事务兜底。
 
-## Phase 1 - Email Tool Foundation
+## 下一阶段：Phase 6A Outlook Read-only Provider
 
-Goal: implement email tools against mock data.
+目标：接入真实邮箱只读能力，但不做任何真实邮箱写操作。
 
-Deliverables:
+优先做：
 
-- `MockEmailProvider` - complete
-- Mock email JSON dataset - complete
-- `email_list_recent` - complete
-- `email_search` - complete
-- `email_get_detail` - complete
-- `email_classify` - complete
-- `email_report_important` - complete
-- `email_list_ignored` - complete
-- trace for every email tool call
+- Microsoft Graph / Outlook OAuth read-only。
+- `list_recent`。
+- `get_detail`。
+- `search`。
+- HTML/MIME 到纯文本和 snippet 的清洗。
+- Graph message 到 `EmailMessage` 的标准化。
+- 复用现有 classifier、scheduler、evaluation report。
 
-Acceptance:
+暂不做：
 
-- No real email credentials required
-- `/email report` works from Windows client
-- Important/ignored decisions include reasons
-- Tests can run deterministically
+- archive / mark read / star / draft 的真实写操作。
+- send / delete。
+- Gmail provider。
+- 后台 Windows service。
+- 复杂 UI。
 
-Implementation note:
+验收标准：
 
-- Start with a deterministic rule-based classifier before adding any LLM classification.
+- 可以读取真实 recent emails。
+- 可以查看真实邮件详情。
+- 邮件正文进入 trace 前有长度控制和敏感内容边界。
+- scheduler 可以在 read-only provider 上生成本地 notifications。
+- 不修改任何真实邮箱状态。
 
-Status: implemented locally against mock data. Needs Windows client regression test after push.
+## Phase 6B Real Provider Approval Actions
 
-## Phase 2 - Approval-gated Actions
+只在 Phase 6A 稳定后考虑。
 
-Goal: safely support mailbox actions.
+可做低风险动作：
 
-Deliverables:
+- archive。
+- mark read。
+- star。
+- create draft。
 
-- `email_archive` - complete against mock provider
-- `email_mark_read` - complete against mock provider
-- `email_star` - complete against mock provider
-- `email_create_draft` - complete against mock provider
-- pending approval flow - complete through existing tool runtime
-- action trace - complete through existing tool runtime
+仍不做：
 
-Acceptance:
+- send。
+- delete。
 
-- Write tools never execute without approval
-- Client can approve/reject action
-- Trace shows proposed action, user decision, and provider result
+所有真实写操作继续走 dangerous tool approval，不允许 LLM 直接绕过服务端执行。
 
-MVP excludes:
+## Phase 8 Windows Demo Polish
 
-- send email
-- delete email
+服务端 read-only 能力稳定后，再回接 Windows 客户端。
 
-Status: implemented headlessly against mock provider. Dedicated Windows UI can wait until server semantics are stable.
+优先做：
 
-## Phase 3 - Preference Memory
+- notification outbox 展示。
+- pending approval 面板。
+- trace 详情查看。
+- scheduler 手动触发和状态查看。
+- 最小 demo 脚本稳定化。
 
-Goal: make triage adapt to the user without RAG.
+不优先做复杂交互和长期后台驻留，避免偏离 AI 应用工程主线。
 
-Deliverables:
+## 后续可选增强
 
-- Important sender/domain rules - complete
-- Ignored sender/domain/category rules - complete
-- User feedback commands through preference tools - complete
-- Preference storage - complete as structured session memory
-- Classification reasons that cite matching preferences - complete
+- eval runs 入 SQLite，方便比较不同模型和 prompt 版本。
+- 更细的真实邮箱 read-only eval 标注流程。
+- 更强的邮件正文脱敏和 trace redaction。
+- 多 provider 抽象完善。
 
-Acceptance:
+## 暂缓事项
 
-- User can mark a sender as important or ignored
-- Future reports reflect those preferences
-- Preferences are inspectable and editable
+- RAG。
+- 多模态。
+- Gmail + Outlook 同时接入。
+- 真实 send / delete。
+- 后台 Windows service。
+- 大规模前端重做。
 
-Status: implemented headlessly through email preference tools. Persistence beyond process memory can be added later if needed.
-
-## Phase 4 - Scheduler / Autonomy
-
-Goal: add controlled autonomy.
-
-Deliverables:
-
-- periodic inbox scan
-- dedupe reported emails
-- important-only notification
-- daily digest
-- scheduler trace
-
-Acceptance:
-
-- The system can autonomously read and classify
-- It never mutates mailbox state without approval
-- Duplicate notifications are avoided
-
-## Phase 5 - Evaluation
-
-Goal: make quality measurable for interviews.
-
-Deliverables:
-
-- 30-50 labeled mock emails
-- expected category/importance/action labels
-- evaluation script
-- confusion summary
-- regression cases
-
-Acceptance:
-
-- Classification quality can be measured
-- Failures can be explained
-- Prompt/policy changes can be compared
-
-## Phase 6 - Real Provider
-
-Goal: connect one real email provider after the mock flow is solid.
-
-Recommended order:
-
-1. Microsoft Graph / Outlook if targeting Windows/enterprise story
-2. Gmail if targeting general user story
-
-Acceptance:
-
-- OAuth setup documented
-- Read-only flow works first
-- Write actions still go through approval
+暂缓原因：这些方向会扩大不确定性，不利于尽快形成稳定、可解释、可演示的面试项目。

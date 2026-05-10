@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .agent import AgentRuntime
+from .auth import require_api_token
 
 app = FastAPI(title="Wispera Server", version="0.1.0")
 STREAM_HEADERS = {
@@ -41,7 +42,10 @@ def health():
     return {"service": "wispera-server", "status": "ok", **runtime.health()}
 
 
-@app.post("/chat")
+Protected = Depends(require_api_token)
+
+
+@app.post("/chat", dependencies=[Protected])
 def chat(request: ChatRequest):
     return StreamingResponse(
         runtime.stream_chat(request.session_id, request.message, mode="agent"),
@@ -50,7 +54,7 @@ def chat(request: ChatRequest):
     )
 
 
-@app.post("/chat/simple")
+@app.post("/chat/simple", dependencies=[Protected])
 def chat_simple(request: ChatRequest):
     return StreamingResponse(
         runtime.stream_chat(request.session_id, request.message, mode="simple"),
@@ -59,7 +63,7 @@ def chat_simple(request: ChatRequest):
     )
 
 
-@app.post("/clear")
+@app.post("/clear", dependencies=[Protected])
 def clear(request: ClearRequest):
     session_id = request.session_id.strip() if request.session_id else None
     runtime.clear(session_id)
@@ -72,7 +76,7 @@ def clear(request: ClearRequest):
     )
 
 
-@app.get("/memory")
+@app.get("/memory", dependencies=[Protected])
 def memory(session_id: str | None = None, limit: int = 20):
     session_id = session_id.strip() if session_id else None
     limit = max(1, min(limit, 100))
@@ -92,17 +96,17 @@ def memory(session_id: str | None = None, limit: int = 20):
     }
 
 
-@app.get("/tools")
+@app.get("/tools", dependencies=[Protected])
 def tools():
     return {"status": "ok", "tools": runtime.tool_inventory()}
 
 
-@app.get("/tools/pending")
+@app.get("/tools/pending", dependencies=[Protected])
 def pending_tools():
     return {"status": "ok", "pending": runtime.pending_tools()}
 
 
-@app.post("/tools/execute")
+@app.post("/tools/execute", dependencies=[Protected])
 def execute_tool(request: ToolExecuteRequest):
     result = runtime.execute_tool(
         request.name,
@@ -115,21 +119,21 @@ def execute_tool(request: ToolExecuteRequest):
     return {"status": status, **result}
 
 
-@app.post("/tools/approve")
+@app.post("/tools/approve", dependencies=[Protected])
 def approve_tool(request: ToolDecisionRequest):
     result = runtime.approve_tool(request.pending_tool_call_id)
     status = "ok" if result.get("ok") else "error"
     return {"status": status, **result}
 
 
-@app.post("/tools/reject")
+@app.post("/tools/reject", dependencies=[Protected])
 def reject_tool(request: ToolDecisionRequest):
     result = runtime.reject_tool(request.pending_tool_call_id)
     status = "ok" if result.get("ok") else "error"
     return {"status": status, **result}
 
 
-@app.get("/traces/{trace_id}")
+@app.get("/traces/{trace_id}", dependencies=[Protected])
 def trace(trace_id: str):
     events = runtime.trace(trace_id)
     return {

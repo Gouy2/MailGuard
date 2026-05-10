@@ -11,13 +11,34 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from threading import RLock
 from typing import Any, Callable, Literal
 
 from .memory import MemoryStore
+from .redaction import summarize_pending_arguments
+from .runtime_env import env_flag
+from .provider_factory import create_email_provider
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 MAX_TOOL_RESULT_CHARS = 12000
+SENSITIVE_PATH_PARTS = {
+    ".env",
+    ".git",
+    ".venv",
+    ".wispera",
+    "__pycache__",
+    "uv.lock",
+}
+SENSITIVE_SUFFIXES = {
+    ".key",
+    ".pem",
+    ".p12",
+    ".pfx",
+    ".sqlite",
+    ".db",
+}
+SHELL_DENIED_TOKENS = ("&", "||", ";", "|", ">", "<", "`", "$(", "\n", "\r")
 SHELL_ALLOWED_COMMANDS = {
     "cat",
     "dir",
@@ -26,10 +47,7 @@ SHELL_ALLOWED_COMMANDS = {
     "ls",
     "more",
     "pwd",
-    "python",
-    "python3",
     "type",
-    "uv",
     "where",
     "whoami",
 }
@@ -116,32 +134,37 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
         self._pending: dict[str, PendingToolCall] = {}
+        self._lock = RLock()
 
     def register(self, spec: ToolSpec) -> None:
-        self._tools[spec.name] = spec
+        with self._lock:
+            self._tools[spec.name] = spec
 
     def get(self, name: str) -> ToolSpec:
-        return self._tools[name]
+        with self._lock:
+            return self._tools[name]
 
     def list(self) -> list[ToolSpec]:
-        return list(self._tools.values())
+        with self._lock:
+            return list(self._tools.values())
 
     def openai_tools(self) -> list[dict[str, Any]]:
         return [tool.as_openai_tool() for tool in self.list()]
 
     def pending(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "id": item.id,
-                "tool_name": item.tool_name,
-                "arguments": item.arguments,
-                "session_id": item.session_id,
-                "trace_id": item.trace_id,
-                "reason": item.reason,
-                "created_at": item.created_at,
-            }
-            for item in self._pending.values()
-        ]
+        with self._lock:
+            return [
+                {
+                    "id": item.id,
+                    "tool_name": item.tool_name,
+                    "arguments": summarize_pending_arguments(item.arguments),
+                    "session_id": item.session_id,
+                    "trace_id": item.trace_id,
+                    "reason": item.reason,
+                    "created_at": item.created_at,
+                }
+                for item in self._pending.values()
+            ]
 
     def execute(
         self,
@@ -151,14 +174,14 @@ class ToolRegistry:
         *,
         approval: Literal["auto", "require", "approved"] = "auto",
     ) -> dict[str, Any]:
-        if name not in self._tools:
+        with self._lock:
+            tool = self._tools.get(name)
+        if tool is None:
             return {
                 "ok": False,
                 "tool": name,
                 "error": "unknown tool",
             }
-
-        tool = self._tools[name]
         validation_error = self._validate(tool.input_schema, arguments)
         if validation_error:
             return {
@@ -186,7 +209,8 @@ class ToolRegistry:
                 trace_id=context.trace_id,
                 reason="dangerous tool requires explicit approval",
             )
-            self._pending[pending.id] = pending
+            with self._lock:
+                self._pending[pending.id] = pending
             return {
                 "ok": False,
                 "tool": name,
@@ -216,7 +240,8 @@ class ToolRegistry:
             }
 
     def approve(self, pending_id: str, context: ToolContext) -> dict[str, Any]:
-        pending = self._pending.pop(pending_id, None)
+        with self._lock:
+            pending = self._pending.pop(pending_id, None)
         if pending is None:
             return {
                 "ok": False,
@@ -225,8 +250,13 @@ class ToolRegistry:
             }
         return self.execute(pending.tool_name, pending.arguments, context, approval="approved")
 
+    def pop_pending(self, pending_id: str) -> PendingToolCall | None:
+        with self._lock:
+            return self._pending.pop(pending_id, None)
+
     def reject(self, pending_id: str) -> dict[str, Any]:
-        pending = self._pending.pop(pending_id, None)
+        with self._lock:
+            pending = self._pending.pop(pending_id, None)
         if pending is None:
             return {
                 "ok": False,
@@ -327,10 +357,33 @@ def _normalize_relative_path(path: str, workspace_root: Path) -> Path:
     return candidate
 
 
+def _safe_workspace_path(path: str, workspace_root: Path) -> Path:
+    candidate = _normalize_relative_path(path, workspace_root)
+    if _is_sensitive_workspace_path(candidate, workspace_root):
+        raise PermissionError("path is not readable by this tool")
+    return candidate
+
+
+def _is_sensitive_workspace_path(path: Path, workspace_root: Path) -> bool:
+    try:
+        relative = path.resolve().relative_to(workspace_root.resolve())
+    except ValueError:
+        return True
+    parts = set(relative.parts)
+    if parts & SENSITIVE_PATH_PARTS:
+        return True
+    if any(part.startswith(".env") for part in relative.parts):
+        return True
+    return path.suffix.lower() in SENSITIVE_SUFFIXES
+
+
 def _shell_policy_error(command: str) -> str | None:
     command = command.strip()
     if not command:
         return "command is required"
+
+    if any(token in command for token in SHELL_DENIED_TOKENS):
+        return "command contains denied shell syntax"
 
     for pattern in SHELL_DENIED_PATTERNS:
         if pattern.search(command):
@@ -388,7 +441,7 @@ def build_default_registry(memory_store: MemoryStore) -> ToolRegistry:
 
     def list_files(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         path = str(args.get("path", ".")).strip() or "."
-        target = _normalize_relative_path(path, context.workspace_root)
+        target = _safe_workspace_path(path, context.workspace_root)
         if not target.exists():
             raise FileNotFoundError(path)
         if not target.is_dir():
@@ -396,6 +449,8 @@ def build_default_registry(memory_store: MemoryStore) -> ToolRegistry:
 
         items = []
         for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            if _is_sensitive_workspace_path(child, context.workspace_root):
+                continue
             items.append(
                 {
                     "name": child.name,
@@ -413,7 +468,7 @@ def build_default_registry(memory_store: MemoryStore) -> ToolRegistry:
         if not path:
             raise ValueError("path is required")
         max_chars = int(args.get("max_chars", 8000))
-        target = _normalize_relative_path(path, context.workspace_root)
+        target = _safe_workspace_path(path, context.workspace_root)
         if not target.exists():
             raise FileNotFoundError(path)
         if not target.is_file():
@@ -486,62 +541,67 @@ def build_default_registry(memory_store: MemoryStore) -> ToolRegistry:
             permission=ToolPermission.READ,
         )
     )
-    registry.register(
-        ToolSpec(
-            name="list_files",
-            description="List files and folders within the workspace root.",
-            input_schema=_schema(
-                {
-                    "path": {"type": "string", "description": "Relative path under the workspace root.", "default": "."},
-                }
-            ),
-            handler=list_files,
-            permission=ToolPermission.READ,
+    if env_flag("WISPERA_DEV_TOOLS"):
+        registry.register(
+            ToolSpec(
+                name="list_files",
+                description="List non-sensitive files and folders within the workspace root.",
+                input_schema=_schema(
+                    {
+                        "path": {
+                            "type": "string",
+                            "description": "Relative path under the workspace root.",
+                            "default": ".",
+                        },
+                    }
+                ),
+                handler=list_files,
+                permission=ToolPermission.READ,
+            )
         )
-    )
-    registry.register(
-        ToolSpec(
-            name="read_text_file",
-            description="Read a UTF-8 text file within the workspace root.",
-            input_schema=_schema(
-                {
-                    "path": {"type": "string", "description": "Relative path under the workspace root."},
-                    "max_chars": {
-                        "type": "integer",
-                        "description": "Maximum characters to return.",
-                        "default": 8000,
-                        "minimum": 1,
-                        "maximum": 50000,
+        registry.register(
+            ToolSpec(
+                name="read_text_file",
+                description="Read a non-sensitive UTF-8 text file within the workspace root.",
+                input_schema=_schema(
+                    {
+                        "path": {"type": "string", "description": "Relative path under the workspace root."},
+                        "max_chars": {
+                            "type": "integer",
+                            "description": "Maximum characters to return.",
+                            "default": 8000,
+                            "minimum": 1,
+                            "maximum": 50000,
+                        },
                     },
-                },
-                required=["path"],
-            ),
-            handler=read_text_file,
-            permission=ToolPermission.READ,
+                    required=["path"],
+                ),
+                handler=read_text_file,
+                permission=ToolPermission.READ,
+            )
         )
-    )
-    registry.register(
-        ToolSpec(
-            name="run_shell_command",
-            description="Run a shell command in the workspace root. This is dangerous and requires explicit user approval.",
-            input_schema=_schema(
-                {
-                    "command": {"type": "string", "description": "Shell command to execute."},
-                    "timeout_seconds": {
-                        "type": "integer",
-                        "description": "Timeout in seconds.",
-                        "default": 10,
-                        "minimum": 1,
-                        "maximum": 30,
+        registry.register(
+            ToolSpec(
+                name="run_shell_command",
+                description="Run a restricted shell command in the workspace root. This is dangerous and requires explicit user approval.",
+                input_schema=_schema(
+                    {
+                        "command": {"type": "string", "description": "Shell command to execute."},
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "description": "Timeout in seconds.",
+                            "default": 10,
+                            "minimum": 1,
+                            "maximum": 30,
+                        },
                     },
-                },
-                required=["command"],
-            ),
-            handler=run_shell_command,
-            permission=ToolPermission.DANGEROUS,
+                    required=["command"],
+                ),
+                handler=run_shell_command,
+                permission=ToolPermission.DANGEROUS,
+            )
         )
-    )
     from .email_tools import register_email_tools
 
-    register_email_tools(registry)
+    register_email_tools(registry, provider=create_email_provider())
     return registry
