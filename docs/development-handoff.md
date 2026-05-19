@@ -4,7 +4,7 @@
 
 ## 当前定位
 
-Wispera 是一个 Windows 桌面邮件分拣 Agent。当前重点是 tool use，不是桌宠外观、通用聊天、RAG 或多模态。
+Wispera 是一个本地邮件分拣 Agent。当前重点是 server 端 tool runtime、QQ/Foxmail IMAP 接入、安全边界和测试，不再使用 Windows 客户端作为主要验证入口。
 
 核心目标：
 
@@ -32,58 +32,54 @@ Wispera 是一个 Windows 桌面邮件分拣 Agent。当前重点是 tool use，
 - evaluation report 输出路径限制。
 - mock eval 固定 mock provider。
 - Docker mock data 修复。
-- provider factory：`WISPERA_EMAIL_PROVIDER` 当前只支持 `mock`。
+- provider factory：`WISPERA_EMAIL_PROVIDER` 支持 `mock` 和 `qq-imap`。
+- QQ/Foxmail IMAP provider：recent/detail/search、MIME 清洗、mark read、archive、star、draft。
 - `MemoryStore` / `ToolRegistry` 进程内锁。
 - scheduler notification 原子去重，SQLite 模式下跨 runtime 共享 DB 也能避免重复 notification。
 
 未完成：
 
-- Outlook / Microsoft Graph read-only provider。
-- OAuth read-only flow。
-- HTML/MIME 清洗。
 - 真实邮箱 read-only eval。
-- Windows UI 回接和原生通知。
-- 真实邮箱写操作。
+- send / delete。
 
 ## 每轮开发纪律
 
 1. 写代码前先阅读并必要时更新相关文档。
-2. 面试关键实现写入 [实现难点与细节](./implementation-details.md) 或 [面试说明](./interview-guide.md)。
+2. 关键实现写入 [实现难点与细节](./implementation-details.md) 或相关测试文档。
 3. 每轮只引入一个主要不确定因素。
-4. 服务端 headless-first，前端保持薄入口，等服务端能力稳定后再回接。
-5. 不能方便自动测试时，把人工测试方法写入 [Windows 验证计划](./windows-test-plan.md) 或测试日志。
+4. 服务端 headless-first，Mac 本地直接测试，不依赖 Windows 客户端。
+5. 不能方便自动测试时，把人工测试方法写入 [测试与评估](./testing-and-evaluation.md) 或测试日志。
 6. 不提交 API key、真实邮箱正文、完整长 trace。
 
 ## 下一步
 
-以 [后续计划](./roadmap.md) 为准，下一步进入 Phase 6A：Outlook / Microsoft Graph read-only provider。
+以 [后续计划](./roadmap.md) 为准，下一步先做真实 QQ/Foxmail 账号自动/手动验证和 Phase 6A polish。
 
-Phase 6A 只做：
+Phase 6A 已做：
 
-- OAuth read-only。
+- QQ/Foxmail IMAP 授权码登录。
 - `list_recent`。
 - `get_detail`。
 - `search`。
-- Graph message 到 `EmailMessage` 的标准化。
+- IMAP message 到 `EmailMessage` 的标准化。
 - HTML/MIME 到纯文本和 snippet 的清洗。
 - 复用现有 classifier、scheduler、evaluation report。
+- approval-gated mark read / archive / star / create draft。
 
-Phase 6A 不做：
+仍不做：
 
-- archive / mark read / star / draft 的真实写操作。
 - send / delete。
 - Gmail provider。
-- 后台 Windows service。
+- Outlook provider。
 - 复杂 UI。
 
 ## 必读文档
 
 - [项目总览](./project-overview.md)：当前能力和风险。
 - [系统架构](./architecture.md)：主要模块和状态边界。
-- [实现难点与细节](./implementation-details.md)：面试关键实现。
+- [实现难点与细节](./implementation-details.md)：关键实现。
 - [测试与评估](./testing-and-evaluation.md)：回归测试和评估命令。
 - [后续计划](./roadmap.md)：下一阶段边界。
-- [Windows 验证计划](./windows-test-plan.md)：人工复测步骤。
 
 ## 常用命令
 
@@ -137,6 +133,16 @@ WISPERA_DEV_TOOLS=1
 WISPERA_EMAIL_PROVIDER=mock
 ```
 
+QQ/Foxmail IMAP provider：
+
+```bash
+WISPERA_EMAIL_PROVIDER=qq-imap
+WISPERA_QQ_EMAIL=...
+WISPERA_QQ_AUTH_CODE=...
+WISPERA_QQ_IMAP_HOST=imap.qq.com
+WISPERA_QQ_IMAP_PORT=993
+```
+
 ## 关键边界
 
 - LLM shadow eval 只做分类，不直接控制邮箱。
@@ -146,7 +152,7 @@ WISPERA_EMAIL_PROVIDER=mock
 - chat history 不持久化，避免扩大隐私面。
 - trace 和 pending 列表只保留脱敏摘要，不保存完整邮件正文或草稿正文。
 - mock eval 永远使用 mock provider，不跟随 active provider。
-- 当前 active provider 也只支持 mock；未知 `WISPERA_EMAIL_PROVIDER` 会让 runtime 创建失败。
+- 当前 active provider 支持 mock 和 QQ/Foxmail IMAP；未知 `WISPERA_EMAIL_PROVIDER` 会让 runtime 创建失败。
 - `email_eval_report` 只能写入 `docs/test-logs/`。
 - scheduler notification 创建必须走 `create_email_notification_once()`，不要恢复成检查、写入、标记三步分离。
-- 真实邮箱接入先 read-only，写操作等 read-only 稳定后再考虑。
+- 真实邮箱写操作必须继续走 dangerous approval；send / delete 不做。

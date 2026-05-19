@@ -1,8 +1,8 @@
 # Wispera
 
-Wispera 当前正在重构为一个 Windows 桌面邮件分拣 Agent。
+Wispera 当前正在重构为一个本地运行的邮件分拣 Agent。
 
-项目重点不是桌宠外观，也不是通用聊天机器人，而是围绕邮件管理这个具体场景，展示 AI 应用开发中的核心能力：
+项目重点不是旧桌宠外观，也不是通用聊天机器人，而是围绕邮件管理这个具体场景，建设一个可测试的本地 Agent 服务：
 
 - tool use
 - typed tool registry
@@ -21,6 +21,7 @@ Wispera 当前正在重构为一个 Windows 桌面邮件分拣 Agent。
 已实现：
 
 - Mock 邮件 provider
+- QQ/Foxmail IMAP provider
 - 邮件读取、搜索、详情、分类、重要邮件报告
 - 归档、标记已读、加星、创建草稿的审批流
 - 结构化偏好记忆
@@ -29,19 +30,16 @@ Wispera 当前正在重构为一个 Windows 桌面邮件分拣 Agent。
 - LLM shadow eval on mock data
 - Evaluation report export
 - Opt-in SQLite 状态持久化
-- Windows 客户端命令入口
+- API token、开发工具开关、trace/pending 脱敏
 
 尚未实现：
 
-- Outlook / Microsoft Graph read-only provider
-- OAuth read-only flow
-- Windows 原生通知 UI
 - 后台定时任务
+- send / delete
 
 ## 目录结构
 
 ```text
-client/     Windows 桌面客户端，当前作为薄交互壳
 server/     FastAPI 服务端，承载 Agent runtime 和邮件能力
 docs/       中文项目文档
 tests/      服务端回归测试
@@ -55,14 +53,6 @@ tests/      服务端回归测试
 cd server
 uv sync
 uv run uvicorn app.main:app --reload
-```
-
-### Windows 客户端
-
-```bash
-cd client
-uv sync
-uv run python main.py
 ```
 
 ## 测试
@@ -109,15 +99,7 @@ OPENAI_BASE_URL=...
 - [系统架构](docs/architecture.md)
 - [实现难点与细节](docs/implementation-details.md)
 - [测试与评估](docs/testing-and-evaluation.md)
-- [面试说明](docs/interview-guide.md)
 - [后续计划](docs/roadmap.md)
-- [Windows 验证计划](docs/windows-test-plan.md)
-
-## 面试定位
-
-推荐这样介绍：
-
-> 我把一个桌宠项目重构为 Windows 桌面邮件分拣 Agent。服务端通过 typed tools 读取和处理邮件，危险操作必须审批，所有工具调用都有 trace，并且有结构化偏好记忆、scheduler 和评估框架。项目重点是 AI Agent 在真实任务中的工具调用、安全边界和可评估性。
 
 ## Credits
 

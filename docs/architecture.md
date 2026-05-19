@@ -3,11 +3,6 @@
 ## 总体架构
 
 ```text
-Windows Client
-  - 桌宠 / 输入框 / 命令壳
-  - 调用服务端 API
-  - 展示报告、pending、trace
-
 FastAPI Server
   - AgentRuntime
   - ToolRegistry
@@ -24,14 +19,11 @@ Email Domain
   - Evaluation
 ```
 
-核心原则：前端是薄交互壳，真正的 Agent 能力在服务端。
+核心原则：服务端 headless-first，当前开发和验证直接在 Mac 本地运行 server/tool runtime。
 
 ## 目录结构
 
 ```text
-client/
-  Windows 桌面客户端，保留桌宠和命令入口。
-
 server/
   FastAPI 服务端，承载 Agent runtime、tools、邮件分拣逻辑。
 
@@ -126,11 +118,24 @@ Authorization: Bearer <token>
 
 ## 邮件 Provider 抽象
 
-当前运行时通过 `WISPERA_EMAIL_PROVIDER` 选择 provider。现在只支持：
+当前运行时通过 `WISPERA_EMAIL_PROVIDER` 选择 provider。现在支持：
 
 - 空值 / `mock`：`MockEmailProvider`
+- `qq-imap` / `qq` / `foxmail` / `foxmail-imap`：`QQImapProvider`
 
 未知 provider 会在 runtime 创建阶段直接失败，避免配置拼错后静默回退到 mock。
+
+QQ/Foxmail provider 使用 IMAP over SSL 和邮箱授权码。当前支持：
+
+- `list_recent`
+- `get_detail`
+- `search`
+- `mark_read`
+- `archive`
+- `star`
+- `create_draft`
+
+所有真实邮箱写操作仍通过 dangerous tool approval 执行。`create_draft` 只把草稿追加到 IMAP 草稿箱，不发送邮件；send / delete 不在当前范围。
 
 Provider 接口：
 
@@ -142,7 +147,7 @@ Provider 接口：
 - `star`
 - `create_draft`
 
-下一阶段优先实现 Outlook / Microsoft Graph read-only provider。后续如果增加其他 provider，也不应该改变上层 tool、classifier、scheduler、eval 的调用方式。
+后续如果增加其他 provider，也不应该改变上层 tool、classifier、scheduler、eval 的调用方式。
 
 ## 分类器
 
@@ -218,7 +223,7 @@ AgentRuntime.create
 - pending approval 不持久化，避免重启后误执行旧的危险动作。
 - chat history 不持久化，避免扩大隐私面。
 - draft metadata 和 evaluation runs 暂不持久化。
-- SQLite 连接可以通过 `AgentRuntime.close()` / `MemoryStore.close()` 显式释放，便于 Windows 测试清理数据库文件句柄。
+- SQLite 连接可以通过 `AgentRuntime.close()` / `MemoryStore.close()` 显式释放，便于本地测试清理数据库文件句柄。
 
 ## Scheduler
 

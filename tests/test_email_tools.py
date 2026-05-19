@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 import os
+from email.message import EmailMessage as OutboundEmailMessage
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,6 +19,7 @@ from server.app.email_tools import classify_email
 from server.app.llm_email_classifier import _normalize_decision, _parse_json_object
 from server.app.memory import MemoryStore
 from server.app.provider_factory import create_email_provider
+from server.app.qq_imap_provider import QQImapConfig, QQImapProvider
 from server.app.sqlite_state import SQLiteStateStore
 
 
@@ -423,7 +425,7 @@ class EmailToolRuntimeTests(unittest.TestCase):
         self.assertEqual([], result["result"]["mismatches"])
 
     def test_eval_report_tool_writes_markdown_report(self) -> None:
-        output_path = "docs/test-logs/test-email-eval-report.md"
+        output_path = f"docs/test-logs/test-email-eval-report-{os.getpid()}.md"
         report_file = Path(output_path)
         if report_file.exists():
             report_file.unlink()
@@ -683,9 +685,153 @@ class AuthAndDevToolTests(unittest.TestCase):
             self.assertIsInstance(create_email_provider(), MockEmailProvider)
 
     def test_provider_factory_rejects_unknown_provider(self) -> None:
-        with patch.dict(os.environ, {"WISPERA_EMAIL_PROVIDER": "outlook"}):
+        with patch.dict(os.environ, {"WISPERA_EMAIL_PROVIDER": "imap"}):
             with self.assertRaises(RuntimeError):
                 create_email_provider()
+
+
+class FakeImapClient:
+    def __init__(self, messages):
+        self.messages = messages
+        self.actions = []
+        self.selected = None
+
+    def login(self, user, password):
+        self.actions.append(("login", user, password))
+        return "OK", [b"logged in"]
+
+    def logout(self):
+        self.actions.append(("logout",))
+        return "OK", [b"logged out"]
+
+    def select(self, mailbox="INBOX", readonly=False):
+        self.selected = (mailbox, readonly)
+        self.actions.append(("select", mailbox, readonly))
+        return "OK", [str(len(self.messages)).encode()]
+
+    def uid(self, command, *args):
+        normalized = command.upper()
+        self.actions.append(("uid", normalized, *args))
+        if normalized == "SEARCH":
+            criteria = args[1:]
+            ids = [message_id.encode("ascii") for message_id in sorted(self.messages, key=int)]
+            if "UNSEEN" in criteria:
+                ids = [
+                    message_id.encode("ascii")
+                    for message_id, item in sorted(self.messages.items(), key=lambda entry: int(entry[0]))
+                    if "\\Seen" not in item["flags"]
+                ]
+            return "OK", [b" ".join(ids)]
+        if normalized == "FETCH":
+            message_set = str(args[0])
+            item = self.messages[message_set]
+            flags = " ".join(sorted(item["flags"]))
+            return "OK", [(f'{message_set} (FLAGS ({flags}) RFC822 {{{len(item["raw"])}}}'.encode(), item["raw"])]
+        if normalized == "STORE":
+            message_set, store_command, flags = str(args[0]), args[1], args[2]
+            target = self.messages[message_set]["flags"]
+            for flag in flags.strip("()").split():
+                if store_command.startswith("+"):
+                    target.add(flag)
+                elif store_command.startswith("-"):
+                    target.discard(flag)
+            return "OK", [b"stored"]
+        if normalized == "COPY":
+            return "OK", [b"copied"]
+        raise AssertionError(f"unexpected uid command: {command}")
+
+    def expunge(self):
+        self.actions.append(("expunge",))
+        return "OK", [b"expunged"]
+
+    def append(self, mailbox, flags, date_time, message):
+        self.actions.append(("append", mailbox, flags, date_time, message))
+        return "OK", [b"appended"]
+
+
+def _raw_imap_message(subject="Action required today", body="Please review before 5 PM.", *, html=False):
+    message = OutboundEmailMessage()
+    message["From"] = "Maya Chen <maya.chen@example.com>"
+    message["To"] = "Alex <alex@example.com>"
+    message["Subject"] = subject
+    message["Date"] = "Sun, 10 May 2026 09:00:00 +0800"
+    message["Message-ID"] = "<message-001@example.com>"
+    if html:
+        message.set_content(f"<html><body><p>{body}</p><script>x()</script></body></html>", subtype="html")
+    else:
+        message.set_content(body)
+    return message.as_bytes()
+
+
+class QQImapProviderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.messages = {
+            "1": {"raw": _raw_imap_message("Newsletter", "Weekly digest"), "flags": {"\\Seen"}},
+            "2": {"raw": _raw_imap_message(html=True), "flags": set()},
+        }
+        self.client = FakeImapClient(self.messages)
+        self.provider = QQImapProvider(
+            QQImapConfig(
+                email_address="user@foxmail.com",
+                auth_code="auth-code",
+                archive_mailbox="Archive",
+                drafts_mailbox="Drafts",
+            ),
+            client_factory=lambda: self.client,
+        )
+
+    def test_list_recent_maps_imap_messages_to_email_messages(self) -> None:
+        emails = self.provider.list_recent(limit=2)
+
+        self.assertEqual(["imap-2", "imap-1"], [item.id for item in emails])
+        self.assertEqual("maya.chen@example.com", emails[0].from_email)
+        self.assertEqual(["alex@example.com"], emails[0].to)
+        self.assertIn("Please review", emails[0].body)
+        self.assertNotIn("<script>", emails[0].body)
+        self.assertFalse(emails[0].is_read)
+        self.assertTrue(emails[1].is_read)
+        self.assertEqual(("INBOX", True), self.client.selected)
+
+    def test_search_scans_recent_messages_locally(self) -> None:
+        matches = self.provider.search("review", limit=5)
+
+        self.assertEqual(["imap-2"], [item.id for item in matches])
+
+    def test_mark_read_updates_seen_flag(self) -> None:
+        result = self.provider.mark_read("imap-2", is_read=True)
+
+        self.assertTrue(result["is_read"])
+        self.assertIn("\\Seen", self.messages["2"]["flags"])
+        self.assertIn(("uid", "STORE", "2", "+FLAGS", r"(\Seen)"), self.client.actions)
+
+    def test_archive_copies_then_deletes_original(self) -> None:
+        result = self.provider.archive("imap-2")
+
+        self.assertTrue(result["archived"])
+        self.assertIn(("uid", "COPY", "2", "Archive"), self.client.actions)
+        self.assertIn(("uid", "STORE", "2", "+FLAGS", r"(\Deleted)"), self.client.actions)
+        self.assertIn(("expunge",), self.client.actions)
+
+    def test_create_draft_appends_to_drafts_mailbox(self) -> None:
+        result = self.provider.create_draft("imap-2", "Thanks, I will review.")
+
+        self.assertFalse(result["sent"])
+        self.assertEqual("Drafts", result["drafts_mailbox"])
+        append_actions = [action for action in self.client.actions if action[0] == "append"]
+        self.assertEqual(1, len(append_actions))
+        self.assertEqual("Drafts", append_actions[0][1])
+        self.assertIn(b"Thanks, I will review.", append_actions[0][4])
+
+    def test_provider_factory_supports_qq_imap(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "WISPERA_EMAIL_PROVIDER": "qq-imap",
+                "WISPERA_QQ_EMAIL": "user@foxmail.com",
+                "WISPERA_QQ_AUTH_CODE": "auth-code",
+            },
+        ):
+            self.assertIsInstance(create_email_provider(), QQImapProvider)
 
 
 if __name__ == "__main__":
