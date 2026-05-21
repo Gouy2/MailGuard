@@ -1,8 +1,8 @@
 # 测试与评估
 
-## 回归测试
+## 自动化回归
 
-在项目根目录运行：
+项目根目录运行：
 
 ```bash
 python3 -m unittest tests.test_email_tools
@@ -11,33 +11,29 @@ python3 -m unittest tests.test_email_tools
 当前结果：
 
 ```text
-41 tests OK
+57 tests OK
 ```
 
 编译检查：
 
 ```bash
-python3 -m py_compile server/app/*.py server/evaluate_email.py client/aemeath/*.py tests/test_email_tools.py
+python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py client/aemeath/*.py tests/test_email_tools.py
 ```
 
-当前测试覆盖：
+当前覆盖重点：
 
-- mock 邮件分类和报告统计。
-- 邮件详情分类。
-- dangerous tool 审批、批准后 mutation、拒绝后不 mutation。
-- 结构化偏好增删查和分类影响。
+- 规则分类器和 mock report。
+- dangerous approval、approve 后 mutation、reject 后不 mutation。
+- Agent tool-use 遇到 pending approval 后立即停止。
+- 结构化偏好和分类影响。
 - scheduler 扫描、去重、notification、digest。
-- mock evaluation。
-- LLM 输出解析、归一化和 shadow eval tool 入口。
-- evaluation report export。
-- SQLite state persistence 和 runtime factory wiring。
-- API token、开发工具开关、敏感路径和 shell policy。
-- provider factory 默认和未知 provider 拒绝。
-- QQ/Foxmail IMAP provider 的 message 标准化、MIME/HTML 清洗、search、mark read、archive 和 draft。
-- scheduler 并发扫描和 SQLite 跨 store notification 去重。
-- classifier error 记录。
+- SQLite persistence 和跨 store 去重。
+- API token、开发工具开关、敏感路径、shell policy。
+- QQ/Foxmail IMAP status、mailboxes、MIME/HTML、search、mark read、archive、star、draft。
+- CLI status/recent/detail/report/review/label/eval-real 和 approval-gated 写操作。
+- mock eval、LLM shadow eval、report export、real label metrics。
 
-## Evaluation 命令
+## Mock Evaluation
 
 规则 baseline：
 
@@ -52,20 +48,23 @@ uv run python evaluate_email.py --classifier rule --limit 36
 /tool email_eval_mock {"limit":36}
 ```
 
-导出评估报告：
+当前 mock baseline：
 
-```bash
-cd server
-uv run python evaluate_email.py --classifier rule --limit 36 --report-output ../docs/test-logs/latest-email-eval-report.md --report-format markdown
-```
+- `sample_count`: 36
+- `labeled_count`: 36
+- `category_accuracy`: 1.0
+- `importance_accuracy`: 1.0
+- `action_accuracy`: 1.0
+- `important_recall`: 1.0
+- `important_precision`: 1.0
+- `noise_filter_precision`: 1.0
+- `mismatches`: []
 
-通过 tool：
+这个结果只说明规则 baseline 与当前 mock 标签一致，不代表真实邮箱质量。
 
-```text
-/tool email_eval_report {"classifier":"rule","limit":36,"output_path":"docs/test-logs/latest-email-eval-report.md"}
-```
+## LLM Shadow Eval
 
-LLM shadow eval：
+LLM shadow eval 只跑 mock 数据，不接真实邮箱，不执行工具。
 
 ```bash
 cd server
@@ -78,104 +77,120 @@ uv run python evaluate_email.py --classifier llm --limit 1
 /tool email_eval_llm_shadow {"limit":1,"continue_on_error":true,"timeout":60,"max_retries":2}
 ```
 
-## 当前 Baseline
+报告导出：
 
-Mock 数据集：
+```bash
+cd server
+uv run python evaluate_email.py --classifier rule --limit 36 --report-output ../docs/test-logs/latest-email-eval-report.md --report-format markdown
+```
 
-- `sample_count`: 36
-- `labeled_count`: 36
-- `category_accuracy`: 1.0
-- `importance_accuracy`: 1.0
-- `action_accuracy`: 1.0
-- `important_recall`: 1.0
-- `important_precision`: 1.0
-- `noise_filter_precision`: 1.0
-- `false_negative_count`: 0
-- `false_positive_count`: 0
-- `mismatches`: []
-
-LLM shadow eval 当前最好记录：
-
-- `model`: `deepseek-v4-flash`
-- `sample_count`: 36
-- `category_accuracy`: 0.9444
-- `importance_accuracy`: 0.9722
-- `action_accuracy`: 0.9444
-- `important_recall`: 1.0
-- `important_precision`: 1.0
-- `noise_filter_precision`: 1.0
-- `errors`: 0
-
-详细历史见 [Phase 5D 测试日志](./test-logs/2026-05-10-phase-5d.md)。
-
-## 指标解释
-
-- `category_accuracy`：分类是否命中标注 category。
-- `importance_accuracy`：重要等级是否命中。
-- `action_accuracy`：建议动作是否命中。
-- `important_recall`：应该汇报的重要邮件里，有多少被识别为 reportable。
-- `important_precision`：系统汇报的重要邮件里，有多少确实应该汇报。
-- `noise_filter_precision`：系统忽略的邮件里，有多少确实是低价值邮件。
-
-开发时优先关注 `important_recall`、`important_precision` 和 `noise_filter_precision`，因为邮件分拣最怕漏掉重要邮件，其次才是 category 是否完全一致。
-
-## 评估边界
-
-当前评估只说明：
-
-- 规则分类器和 mock 标签一致。
-- LLM 可以在 mock 数据上完成结构化 shadow classification。
-- evaluation report 可以沉淀可展示结果。
-
-当前评估不说明：
-
-- 真实邮箱 provider 已可用。
-- 真实用户邮箱分布能保持同样指标。
-- LLM 在所有真实邮件上稳定。
-
-下一步需要新增真实邮箱只读评估流程，但默认自动化测试仍不调用真实邮箱或真实 LLM。
+报告只能写入 `docs/test-logs/`，不保存完整邮件正文。
 
 ## QQ/Foxmail IMAP 冒烟测试
 
-前提：`server/.env` 已配置 `WISPERA_EMAIL_PROVIDER=qq-imap`、`WISPERA_QQ_EMAIL` 和 `WISPERA_QQ_AUTH_CODE`。
+前提：`server/.env` 已配置 QQ/Foxmail provider 和授权码。
 
-优先在 Mac 本地用 server tool runtime 测：
+只读检查：
 
 ```bash
-python3 - <<'PY'
-from server.app.agent import AgentRuntime
-
-runtime = AgentRuntime.create()
-try:
-    for name, args in [
-        ("email_list_recent", {"limit": 5}),
-        ("email_list_recent", {"limit": 5, "unread_only": True}),
-        ("email_search", {"query": "验证码", "limit": 5}),
-    ]:
-        result = runtime.execute_tool_for_test(name, args, session_id="qq-smoke")
-        print(name, result["ok"], result.get("result", result.get("error")))
-finally:
-    runtime.close()
-PY
+cd server
+uv run python email_cli.py status
+uv run python email_cli.py mailboxes
+uv run python email_cli.py recent --limit 5
+uv run python email_cli.py recent --limit 5 --unread
+uv run python email_cli.py search 验证码 --limit 5
 ```
 
-写操作测试必须使用专门测试邮件，且必须走 pending approval：
+查看详情：
+
+```bash
+uv run python email_cli.py detail imap-123 --max-body-chars 600
+uv run python email_cli.py detail imap-123 --body --max-body-chars 600
+```
+
+`detail` 默认不打印正文；加 `--body` 时只打印截断预览。
+
+`status` 数量口径：
+
+- `Messages` / `UID SEARCH ALL`：当前 `WISPERA_QQ_IMAP_MAILBOX` 下 IMAP `UID SEARCH ALL` 的数量。
+- `Selected mailbox EXISTS`：IMAP `SELECT` / `EXAMINE` 返回的 EXISTS 数量。
+- `Mailbox counts`：可见文件夹的 `STATUS (MESSAGES UNSEEN)`。
+
+当前真实账号曾出现网页版收件箱约 6305 封、IMAP `INBOX` 只显示几百封的情况。`Selected mailbox EXISTS` 和 `UID SEARCH ALL` 数量一致，说明差异来自 QQ/Foxmail IMAP 暴露范围或账号设置，不是 `recent` limit。
+
+## 写操作测试
+
+必须用专门测试邮件。命令不加 `--yes` 时只预览 pending approval，不修改邮箱；加 `--yes` 才批准并执行。
+
+标记已读：
+
+```bash
+cd server
+uv run python email_cli.py mark-read imap-123
+uv run python email_cli.py mark-read imap-123 --yes
+uv run python email_cli.py mark-read imap-123 --unread --yes
+```
+
+归档：
+
+```bash
+cd server
+uv run python email_cli.py mailboxes
+uv run python email_cli.py status
+uv run python email_cli.py archive imap-123
+uv run python email_cli.py archive imap-123 --yes
+```
+
+`WISPERA_QQ_ARCHIVE_MAILBOX` 必须使用 `mailboxes` 输出中的真实文件夹名。若输出为 `我的文件夹/Archive`，配置也必须写完整路径。
+
+创建草稿：
+
+```bash
+cd server
+uv run python email_cli.py draft imap-123 --body "这是一条 Wispera 测试草稿，请忽略。"
+uv run python email_cli.py draft imap-123 --body "这是一条 Wispera 测试草稿，请忽略。" --yes
+uv run python email_cli.py draft imap-123 --body-file /path/to/draft.txt --yes
+```
+
+草稿只追加到 `WISPERA_QQ_DRAFTS_MAILBOX`，不会发送。
+
+## 真实邮箱人工评估
+
+目标：在不保存正文的前提下评估当前分类策略在真实 QQ/Foxmail 邮箱里的表现。
+
+工作流：
+
+```bash
+cd server
+uv run python email_cli.py review --limit 10 --unread --label
+uv run python email_cli.py labels
+uv run python email_cli.py eval-real
+```
+
+`review --label` 会逐封展示摘要和当前分类，并提示输入：
+
+- `i` / `important`：必须汇报。
+- `l` / `later`：值得稍后处理。
+- `n` / `ignore`：可以过滤。
+- `s` / `skip`：跳过。
+- `q` / `quit`：退出。
+
+默认标签文件：
 
 ```text
-email_mark_read -> approve
-email_create_draft -> approve
-email_archive -> approve
+server/data/real_email_labels.json
 ```
 
-不要在真实重要邮件上先测 archive。
+该文件只保存 email id、subject、from、人工标签和预测结果，不保存正文。它仍包含真实邮箱元数据，已加入 `.gitignore`，不要提交。
 
-## 测试日志
+`eval-real` 输出：
 
-关键测试日志放在 `docs/test-logs/`。
+- `important_recall`
+- `important_precision`
+- `noise_filter_precision`
+- false negative / false positive 数量
+- mismatch 列表
 
-记录原则：
+## 记录原则
 
-- 只记录关键命令、结果和少量结论。
-- 不保存 API key、真实邮箱正文、完整 trace 或大段命令输出。
-- LLM 冒烟测试只记录模型名、样本数量、是否通过、错误类型。
-- 日志用于开发复盘和后续回归，不替代自动化测试。
+测试日志放在 `docs/test-logs/`，只记录关键命令、结果和结论。不要记录 API key、授权码、真实邮件正文、完整 trace 或大段命令输出。

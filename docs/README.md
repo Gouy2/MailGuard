@@ -1,34 +1,29 @@
 # Wispera 开发文档
 
-Wispera 当前按 Mac 本地开发、server-first 的方式推进。文档只记录开发需要的信息：架构、配置、测试、状态边界和后续任务。
+这些文档只保留开发需要的信息：当前状态、架构边界、配置、测试、评估和下一步计划。历史测试日志保留在 `docs/test-logs/`，但主文档不再按阶段流水账展开。
 
 ## 当前状态
 
-服务端能力已经和旧客户端解耦。当前真实邮箱方向是个人 QQ/Foxmail IMAP，不再优先开发 Microsoft Graph / Outlook provider。
-
-当前需要注意的主要风险：
-
-- LLM shadow eval 已接入 mock 邮件评估链路，但真实邮箱质量仍未验证。
-- email preferences、通知、去重状态和 scan history 已支持 opt-in SQLite 持久化；notification 创建已做原子去重；chat history、pending approval、draft metadata 和 eval runs 仍未持久化。
-- Mock 数据已扩展到 36 条，适合做第一轮离线评估；真实邮箱质量仍需要 read-only provider 验证。
-- runtime provider factory 当前支持 mock 和 QQ/Foxmail IMAP，未知 `WISPERA_EMAIL_PROVIDER` 会直接失败。
-- QQ/Foxmail IMAP provider 已有 recent/detail/search 和 approval-gated mark read/archive/draft，但文件夹名、线程、时区和真实邮箱质量仍需要手动验证。
+- 开发方式：Mac 本地、server-first。
+- 真实邮箱方向：个人 QQ/Foxmail IMAP。
+- 旧客户端：暂不作为主要验证入口。
+- 已验证：真实 QQ/Foxmail recent/detail/search、mark read、archive、star、create draft。
+- 下一步：进入 agent tool-use 测试和最小 approval 交互闭环。
 
 ## 文档索引
 
-- [开发接手指南](./development-handoff.md)
 - [项目总览](./project-overview.md)
 - [系统架构](./architecture.md)
-- [实现难点与细节](./implementation-details.md)
+- [实现细节](./implementation-details.md)
 - [测试与评估](./testing-and-evaluation.md)
 - [后续计划](./roadmap.md)
+- [开发接手指南](./development-handoff.md)
 - [测试日志](./test-logs/README.md)
 
-## 开发原则
+## 核心原则
 
-后续开发继续遵循：
-
-1. 写代码前先阅读、维护和整理相关文档。
-2. 服务端能力优先 headless-first，前端暂时不作为验证入口。
-3. 每次只引入一个主要不确定因素，避免 LLM、真实邮箱和自动化同时上线造成调试困难。
-4. 不提交授权码、API key、真实邮箱正文或完整 trace。
+1. 服务端能力优先，先稳定 tool runtime 和真实邮箱边界。
+2. 读操作可以自动化，真实邮箱写操作必须 pending approval。
+3. 不提交授权码、API key、真实邮箱正文、真实标签文件或完整 trace。
+4. 每轮开发只引入一个主要不确定因素。
+5. Mock eval、真实邮箱 eval、LLM shadow eval 分开看，不混在一个结论里。

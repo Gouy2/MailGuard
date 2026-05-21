@@ -23,6 +23,7 @@ todolist.md
 
 # Server data
 server/logs/
+server/data/real_email_labels.json
 .wispera/
 
 # claude

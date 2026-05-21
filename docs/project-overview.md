@@ -1,129 +1,131 @@
 # 项目总览
 
-## 项目定位
+Wispera 是一个本地邮件分拣 Agent。它通过 typed tools 读取邮件、分类邮件、过滤广告和低价值消息、汇报重要邮件，并把真实邮箱写操作放进审批流。
 
-Wispera 是一个本地邮件分拣 Agent。它通过 typed tools 读取邮件、分类邮件、过滤广告和低价值消息、汇报重要邮件，并且在执行任何邮箱写操作前要求用户审批。
+当前开发目标不是通用聊天，也不是先做复杂 UI，而是把真实 QQ/Foxmail 邮箱、Agent tool-use、安全边界和评估闭环稳定下来。
 
-一句话介绍：
+## 已实现能力
 
-> Wispera 是一个以 tool use 为核心的邮件分拣 Agent：它能读取邮件、解释分类原因、过滤噪音、汇报重要邮件，并把归档、标记已读、加星、创建草稿等写操作放到审批流中。
+### Agent Runtime
 
-## 为什么聚焦邮件分拣
-
-邮件场景足够小，但工程深度足够：
-
-- 有真实外部系统：QQ/Foxmail IMAP。
-- 有隐私数据：邮件内容、联系人、日程、账单、安全提醒。
-- 有工具调用：列表、搜索、详情、归档、标记已读、创建草稿。
-- 有安全边界：读操作可以自动化，写操作必须审批。
-- 有个性化：重要发件人、忽略发件人、忽略类别。
-- 有自治：定时扫描、去重、通知、digest。
-- 有评估：重要邮件召回、噪音过滤、误报、漏报。
-
-当前开发重点是把真实 QQ/Foxmail 邮箱接入、安全边界和测试闭环稳定下来。
-
-## 当前已实现能力
-
-### Tool Runtime
-
-- typed tool registry
+- `AgentRuntime`
+- OpenAI tool calling
+- typed `ToolRegistry`
 - JSON schema 参数校验
 - `read` / `write` / `dangerous` 权限分级
 - dangerous tool pending approval
-- approve / reject API
+- approve / reject
 - trace 记录和查询
-- API token auth、开发工具开关和 trace/pending 脱敏
-- `ToolRegistry` 使用进程内锁保护 registry 和 pending map
+- API token auth
+- trace / pending 脱敏
 
-### 邮件读取与分类
+Agent runtime 在 dangerous tool 返回 pending approval 时会立即停止本轮工具循环，等待用户审批或拒绝，不会把 pending 结果继续喂回模型让它自行推进。
+
+### 邮件 Provider
 
 - `MockEmailProvider`
 - `QQImapProvider`
-- `WISPERA_EMAIL_PROVIDER` provider factory，支持 `mock` 和 `qq-imap`
-- `server/data/mock_emails.json`
-- 36 条 labeled mock emails
+- provider factory：`WISPERA_EMAIL_PROVIDER=mock|qq-imap`
+- QQ/Foxmail IMAP SSL 登录
+- `status`
+- `mailboxes`
+- `recent`
+- `detail`
+- `search`
+- MIME / HTML 清洗
+- IMAP modified UTF-7 文件夹名解码
+
+QQ/Foxmail 真实读写冒烟已通过：recent/detail/search、mark read、archive、star、create draft。send / delete 不在当前范围。
+
+### 邮件工具
+
 - `email_list_recent`
 - `email_search`
 - `email_get_detail`
 - `email_classify`
 - `email_report_important`
 - `email_list_ignored`
-- 规则分类器，返回 category、importance、suggested_action、reasons
-
-### 审批写操作
-
 - `email_archive`
 - `email_mark_read`
 - `email_star`
 - `email_create_draft`
-- 全部注册为 `dangerous`
-- 未审批时只生成 pending tool call
-- 批准后才修改 mock provider 内存状态
-- 不支持 send / delete
 
-### 结构化偏好记忆
+所有真实邮箱写操作都是 `dangerous`。未审批时只创建 pending tool call；批准后才执行 IMAP mutation。
 
-- `email_get_preferences`
-- `email_add_preference`
-- `email_remove_preference`
-- `email_set_preference`
-- 支持 important / ignored sender、domain、category
-- 分类理由会引用命中的偏好
+### 偏好与 Scheduler
 
-### Scheduler / Autonomy
+- 结构化偏好：important / ignored sender、domain、category
+- headless scheduler
+- notification outbox
+- digest
+- email id 去重
+- opt-in SQLite 持久化 preferences、reported ids、notifications、scan history
 
-- `email_scheduler_run_once`
-- `email_notifications`
-- `email_notification_mark_read`
-- `email_daily_digest`
-- `email_scheduler_state`
-- 扫描 unread 邮件
-- 只创建本地 notification，不修改邮箱状态
-- 按 email id 去重，避免重复通知
-- notification 创建通过 `create_email_notification_once()` 原子完成；SQLite 模式下也能跨 store 去重
+Scheduler 只能读邮件、分类和创建本地 notification，不能修改邮箱。
 
 ### Evaluation
 
-- `email_eval_mock`
-- `email_eval_llm_shadow`
-- `email_eval_report`
-- `server/evaluate_email.py`
-- 当前 36 条 mock 样本
-- 支持规则分类器和 LLM shadow classifier 两种评估入口
-- category accuracy、importance accuracy、important recall、important precision、noise filtering precision
-- confusion matrix、mismatch 列表和 classifier error 记录
-- 支持 Markdown/JSON 评估报告导出
+- 36 条 labeled mock emails
+- deterministic rule baseline
+- LLM shadow eval on mock data
+- Markdown / JSON evaluation report
+- real mailbox manual label/eval
+- `server/email_cli.py review --label`
+- `server/data/real_email_labels.json` 已加入 `.gitignore`
 
-### State Persistence
+真实标签只保存 email id、subject、from、人工标签和预测结果，不保存正文。
 
-- 默认仍使用内存状态，便于开发和测试。
-- 设置 `WISPERA_STATE_DB` 后启用 SQLite。
-- 当前持久化 email preferences、reported email ids、notifications、scan history。
-- 暂不持久化 chat history、pending approval、draft metadata、evaluation runs。
-- `MemoryStore` 使用进程内锁保护运行时状态。
+## 当前边界
 
-## 当前没有实现的能力
+暂不实现：
 
-- 后台定时任务
-- 真实邮箱写操作
-- 真实邮箱 read-only eval 标注流程
+- send / delete
+- 后台常驻定时任务
+- 其他邮箱 provider
+- 复杂 UI
+- 持久化 pending approval
+- 持久化 chat history
+- 持久化真实邮件正文
 
-## 当前主要风险
+## 当前风险
 
-- Mock 数据不能代表真实邮箱分布。
-- LLM shadow eval 已跑通，但真实邮箱质量未验证。
+- 真实邮箱分类质量仍需要继续积累人工标签样本。
+- LLM shadow eval 已在 mock 数据上跑通，但尚未接入真实邮箱评估闭环。
+- QQ/Foxmail IMAP 目前只向客户端暴露部分历史 INBOX；这不是 CLI 的 `recent` limit，但暂不作为开发阻塞项。
 - 规则 baseline 有 mock 过拟合风险，只能作为稳定对照组。
-- 真实 provider 已有 QQ/Foxmail IMAP 接入，但仍需要真实账号手动验证文件夹名、线程、时区和 IMAP 行为。
-- 真实邮箱写操作需要继续用专门测试邮件验证，避免误改重要邮件。
+- 真实写操作即使已手测通过，也必须继续只在专门测试邮件上验证。
 
-## API Key 说明
+## 环境变量
 
-LLM shadow eval 需要 LLM API。不要把 key 写入代码或文档。当前服务端会读取 `server/.env` 或进程环境变量：
+QQ/Foxmail：
+
+```bash
+WISPERA_EMAIL_PROVIDER=qq-imap
+WISPERA_QQ_EMAIL=...
+WISPERA_QQ_AUTH_CODE=...
+WISPERA_QQ_IMAP_HOST=imap.qq.com
+WISPERA_QQ_IMAP_PORT=993
+WISPERA_QQ_IMAP_MAILBOX=INBOX
+WISPERA_QQ_ARCHIVE_MAILBOX=...
+WISPERA_QQ_DRAFTS_MAILBOX=Drafts
+```
+
+可选本地状态：
+
+```bash
+WISPERA_STATE_DB=data/wispera_state.db
+```
+
+可选 API auth：
+
+```bash
+WISPERA_AUTH_TOKEN=...
+```
+
+LLM shadow eval：
 
 ```bash
 OPENAI_API_KEY=...
 OPENAI_MODEL=...
 OPENAI_BASE_URL=...
 ```
-
-如果使用 OpenAI-compatible 服务，也通过 `OPENAI_BASE_URL` 配置。

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import unittest
 import os
+from io import StringIO
 from email.message import EmailMessage as OutboundEmailMessage
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from server.email_cli import run_cli
 from server.app.agent import _state_db_path
 from server.app.agent import AgentRuntime
 from server.app.auth import configured_auth_token
@@ -20,7 +22,51 @@ from server.app.llm_email_classifier import _normalize_decision, _parse_json_obj
 from server.app.memory import MemoryStore
 from server.app.provider_factory import create_email_provider
 from server.app.qq_imap_provider import QQImapConfig, QQImapProvider
+from server.app.real_email_eval import evaluate_real_labels, load_real_labels, save_real_label
 from server.app.sqlite_state import SQLiteStateStore
+
+
+class FakeFunction:
+    def __init__(self, name: str, arguments: str) -> None:
+        self.name = name
+        self.arguments = arguments
+
+
+class FakeToolCall:
+    def __init__(self, tool_call_id: str, name: str, arguments: str) -> None:
+        self.id = tool_call_id
+        self.type = "function"
+        self.function = FakeFunction(name, arguments)
+
+
+class FakeChatMessage:
+    def __init__(self, content: str = "", tool_calls: list[FakeToolCall] | None = None) -> None:
+        self.content = content
+        self.tool_calls = tool_calls or []
+
+
+class FakeChoice:
+    def __init__(self, message: FakeChatMessage) -> None:
+        self.message = message
+
+
+class FakeChatResponse:
+    def __init__(self, message: FakeChatMessage) -> None:
+        self.choices = [FakeChoice(message)]
+
+
+class FakeOpenAIClient:
+    def __init__(self, responses: list[FakeChatResponse]) -> None:
+        self.responses = list(responses)
+        self.calls: list[dict] = []
+        self.chat = self
+        self.completions = self
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        if not self.responses:
+            raise AssertionError("unexpected extra OpenAI chat completion call")
+        return self.responses.pop(0)
 
 
 class EmailClassifierTests(unittest.TestCase):
@@ -114,6 +160,8 @@ class EmailToolRuntimeTests(unittest.TestCase):
         self.assertIn("email_notification_mark_read", names)
         self.assertIn("email_daily_digest", names)
         self.assertIn("email_scheduler_state", names)
+        self.assertIn("email_provider_status", names)
+        self.assertIn("email_list_mailboxes", names)
         self.assertIn("email_eval_mock", names)
         self.assertIn("email_eval_llm_shadow", names)
         self.assertIn("email_eval_report", names)
@@ -203,6 +251,36 @@ class EmailToolRuntimeTests(unittest.TestCase):
         approved = self.runtime.approve_tool(pending["pending_tool_call_id"])
         self.assertTrue(approved["ok"])
         self.assertIn("Sensitive draft body", approved["result"]["result"]["body_preview"])
+
+    def test_agent_stops_when_dangerous_tool_requires_approval(self) -> None:
+        fake_client = FakeOpenAIClient(
+            [
+                FakeChatResponse(
+                    FakeChatMessage(
+                        tool_calls=[
+                            FakeToolCall(
+                                "call-archive",
+                                "email_archive",
+                                '{"email_id":"email-001"}',
+                            )
+                        ]
+                    )
+                ),
+                FakeChatResponse(FakeChatMessage("should not be reached")),
+            ]
+        )
+
+        with patch("server.app.agent._openai_client", return_value=fake_client):
+            events = list(self.runtime.stream_chat("approval-agent", "Archive email-001"))
+
+        self.assertEqual(1, len(fake_client.calls))
+        self.assertEqual(1, len(self.runtime.pending_tools()))
+        self.assertIn('"status": "pending"', events[-1])
+        self.assertIn("pending_tool_call_id", events[-1])
+
+        detail = self.runtime.execute_tool_for_test("email_get_detail", {"email_id": "email-001"})
+        self.assertIn("inbox", detail["result"]["email"]["labels"])
+        self.assertNotIn("archived", detail["result"]["email"]["labels"])
 
     def test_preference_tools_are_structured_and_session_scoped(self) -> None:
         add = self.runtime.execute_tool_for_test(
@@ -518,6 +596,507 @@ class EmailToolRuntimeTests(unittest.TestCase):
         )
 
 
+class FakeCliRuntime:
+    def __init__(self, execute_results, approve_results=None):
+        self.execute_results = list(execute_results)
+        self.approve_results = approve_results or {}
+        self.execute_calls = []
+        self.approved = []
+        self.rejected = []
+        self.closed = False
+
+    def execute_tool(self, name, arguments, session_id="default", trace_id=None):
+        self.execute_calls.append((name, arguments, session_id))
+        return self.execute_results.pop(0)
+
+    def approve_tool(self, pending_tool_call_id):
+        self.approved.append(pending_tool_call_id)
+        return self.approve_results[pending_tool_call_id]
+
+    def reject_tool(self, pending_tool_call_id):
+        self.rejected.append(pending_tool_call_id)
+        return {
+            "ok": True,
+            "rejected": True,
+            "pending_tool_call_id": pending_tool_call_id,
+        }
+
+    def close(self):
+        self.closed = True
+
+
+class EmailCliTests(unittest.TestCase):
+    def test_status_prints_diagnostic_counts(self) -> None:
+        runtime = FakeCliRuntime(
+            execute_results=[
+                {
+                    "ok": True,
+                    "tool": "email_provider_status",
+                    "result": {
+                        "provider": "QQImapProvider",
+                        "email": "us***@foxmail.com",
+                        "host": "imap.qq.com",
+                        "port": 993,
+                        "mailbox": "INBOX",
+                        "mailbox_display": "INBOX",
+                        "message_count": 251,
+                        "unread_count": 219,
+                        "selected_message_count": 251,
+                        "uid_search_all_count": 251,
+                        "visible_mailbox_count": 3,
+                        "archive_mailbox": "我的文件夹/Archive",
+                        "archive_mailbox_display": "我的文件夹/Archive",
+                        "archive_mailbox_exists": True,
+                        "drafts_mailbox": "Drafts",
+                        "drafts_mailbox_display": "Drafts",
+                        "drafts_mailbox_exists": True,
+                        "mailbox_counts": [
+                            {
+                                "name": "INBOX",
+                                "selected": True,
+                                "selectable": True,
+                                "status_available": True,
+                                "message_count": 251,
+                                "unread_count": 219,
+                            },
+                            {
+                                "name": "我的文件夹/Archive",
+                                "selected": False,
+                                "selectable": True,
+                                "status_available": True,
+                                "message_count": 1,
+                                "unread_count": 0,
+                            },
+                            {
+                                "name": "父文件夹",
+                                "selected": False,
+                                "selectable": True,
+                                "status_available": False,
+                                "message_count": None,
+                                "unread_count": None,
+                            },
+                        ],
+                    },
+                }
+            ]
+        )
+        stdout = StringIO()
+
+        exit_code = run_cli(
+            ["status"],
+            runtime_factory=lambda: runtime,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+
+        self.assertEqual(0, exit_code)
+        output = stdout.getvalue()
+        self.assertIn("Selected mailbox EXISTS: 251", output)
+        self.assertIn("Selected mailbox UID SEARCH ALL: 251", output)
+        self.assertIn("* INBOX: 251 total, 219 unread", output)
+        self.assertIn("- 我的文件夹/Archive: 1 total, 0 unread", output)
+        self.assertIn("- 父文件夹: status unavailable", output)
+
+    def test_recent_prints_compact_summary(self) -> None:
+        runtime = FakeCliRuntime(
+            execute_results=[
+                {
+                    "ok": True,
+                    "tool": "email_list_recent",
+                    "result": {
+                        "provider": "MockEmailProvider",
+                        "count": 1,
+                        "emails": [
+                            {
+                                "id": "email-001",
+                                "from_name": "Maya Chen",
+                                "from_email": "maya.chen@example.com",
+                                "subject": "Action required today",
+                                "snippet": "Please review before 5 PM.",
+                                "received_at": "2026-05-10T01:00:00+00:00",
+                                "is_read": False,
+                            }
+                        ],
+                    },
+                }
+            ]
+        )
+        stdout = StringIO()
+        stderr = StringIO()
+
+        exit_code = run_cli(
+            ["recent", "--limit", "1", "--unread"],
+            runtime_factory=lambda: runtime,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [("email_list_recent", {"limit": 1, "unread_only": True}, "email-cli")],
+            runtime.execute_calls,
+        )
+        output = stdout.getvalue()
+        self.assertIn("Provider: MockEmailProvider", output)
+        self.assertIn("email-001 [unread]", output)
+        self.assertIn("Action required today", output)
+        self.assertEqual("", stderr.getvalue())
+        self.assertTrue(runtime.closed)
+
+    def test_dangerous_command_without_yes_rejects_pending_preview(self) -> None:
+        runtime = FakeCliRuntime(
+            execute_results=[
+                {
+                    "ok": False,
+                    "tool": "email_mark_read",
+                    "requires_approval": True,
+                    "pending_tool_call_id": "pending-001",
+                    "reason": "dangerous tool requires explicit approval",
+                }
+            ]
+        )
+        stdout = StringIO()
+
+        exit_code = run_cli(
+            ["mark-read", "imap-2"],
+            runtime_factory=lambda: runtime,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [("email_mark_read", {"email_id": "imap-2", "is_read": True}, "email-cli")],
+            runtime.execute_calls,
+        )
+        self.assertEqual(["pending-001"], runtime.rejected)
+        self.assertEqual([], runtime.approved)
+        self.assertIn("No mailbox mutation executed.", stdout.getvalue())
+
+    def test_dangerous_command_with_yes_approves_pending_call(self) -> None:
+        runtime = FakeCliRuntime(
+            execute_results=[
+                {
+                    "ok": False,
+                    "tool": "email_create_draft",
+                    "requires_approval": True,
+                    "pending_tool_call_id": "pending-002",
+                    "reason": "dangerous tool requires explicit approval",
+                }
+            ],
+            approve_results={
+                "pending-002": {
+                    "ok": True,
+                    "tool": "email_create_draft",
+                    "result": {
+                        "action": "create_draft",
+                        "result": {
+                            "draft_id": "draft-001",
+                            "source_email_id": "imap-2",
+                            "to": ["maya.chen@example.com"],
+                            "subject": "Re: Action required today",
+                            "sent": False,
+                            "drafts_mailbox": "Drafts",
+                        },
+                    },
+                }
+            },
+        )
+        stdout = StringIO()
+
+        exit_code = run_cli(
+            ["draft", "imap-2", "--body", "收到，我会处理。", "--yes"],
+            runtime_factory=lambda: runtime,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [("email_create_draft", {"email_id": "imap-2", "body": "收到，我会处理。"}, "email-cli")],
+            runtime.execute_calls,
+        )
+        self.assertEqual(["pending-002"], runtime.approved)
+        self.assertEqual([], runtime.rejected)
+        self.assertIn("Draft created. It was not sent.", stdout.getvalue())
+
+    def test_review_lists_classified_real_samples_without_bodies(self) -> None:
+        runtime = FakeCliRuntime(
+            execute_results=[
+                {
+                    "ok": True,
+                    "tool": "email_list_recent",
+                    "result": {
+                        "provider": "QQImapProvider",
+                        "count": 1,
+                        "emails": [
+                            {
+                                "id": "imap-2",
+                                "from_name": "Maya Chen",
+                                "from_email": "maya.chen@example.com",
+                                "subject": "Action required today",
+                                "snippet": "Please review before 5 PM.",
+                                "is_read": False,
+                            }
+                        ],
+                    },
+                },
+                {
+                    "ok": True,
+                    "tool": "email_classify",
+                    "result": {
+                        "email": {
+                            "id": "imap-2",
+                            "from_name": "Maya Chen",
+                            "from_email": "maya.chen@example.com",
+                            "subject": "Action required today",
+                            "snippet": "Please review before 5 PM.",
+                        },
+                        "classification": {
+                            "category": "action_required",
+                            "importance": "high",
+                            "suggested_action": "review",
+                            "is_reportable": True,
+                            "is_ignored": False,
+                            "reasons": ["asks for action"],
+                        },
+                    },
+                },
+            ]
+        )
+        stdout = StringIO()
+
+        exit_code = run_cli(
+            ["review", "--limit", "1", "--unread"],
+            runtime_factory=lambda: runtime,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [
+                ("email_list_recent", {"limit": 1, "unread_only": True}, "email-cli"),
+                ("email_classify", {"email_id": "imap-2"}, "email-cli"),
+            ],
+            runtime.execute_calls,
+        )
+        output = stdout.getvalue()
+        self.assertIn("imap-2 [high/action_required/report]", output)
+        self.assertIn("Action required today", output)
+        self.assertNotIn("Body:", output)
+
+    def test_review_interactive_labeling_saves_labels_inline(self) -> None:
+        runtime = FakeCliRuntime(
+            execute_results=[
+                {
+                    "ok": True,
+                    "tool": "email_list_recent",
+                    "result": {
+                        "provider": "QQImapProvider",
+                        "count": 2,
+                        "emails": [
+                            {
+                                "id": "imap-2",
+                                "from_name": "Maya Chen",
+                                "from_email": "maya.chen@example.com",
+                                "subject": "Action required today",
+                                "snippet": "Please review before 5 PM.",
+                                "body": "This body must not be saved.",
+                            },
+                            {
+                                "id": "imap-3",
+                                "from_name": "News",
+                                "from_email": "news@example.com",
+                                "subject": "Weekly update",
+                                "snippet": "Here is the weekly update.",
+                                "body": "This second body must not be saved.",
+                            },
+                        ],
+                    },
+                },
+                {
+                    "ok": True,
+                    "tool": "email_classify",
+                    "result": {
+                        "email": {
+                            "id": "imap-2",
+                            "from_email": "maya.chen@example.com",
+                            "subject": "Action required today",
+                            "snippet": "Please review before 5 PM.",
+                        },
+                        "classification": {
+                            "category": "action_required",
+                            "importance": "high",
+                            "suggested_action": "review",
+                            "is_reportable": True,
+                            "is_ignored": False,
+                            "reasons": ["asks for action"],
+                        },
+                    },
+                },
+                {
+                    "ok": True,
+                    "tool": "email_classify",
+                    "result": {
+                        "email": {
+                            "id": "imap-3",
+                            "from_email": "news@example.com",
+                            "subject": "Weekly update",
+                            "snippet": "Here is the weekly update.",
+                        },
+                        "classification": {
+                            "category": "newsletter",
+                            "importance": "low",
+                            "suggested_action": "ignore",
+                            "is_reportable": False,
+                            "is_ignored": True,
+                            "reasons": ["newsletter/unsubscribe signal"],
+                        },
+                    },
+                },
+            ]
+        )
+        answers = iter(["i", "n"])
+        with TemporaryDirectory() as temp_dir:
+            labels_path = Path(temp_dir) / "real_labels.json"
+            stdout = StringIO()
+
+            exit_code = run_cli(
+                ["review", "--limit", "2", "--label", "--labels-path", str(labels_path)],
+                runtime_factory=lambda: runtime,
+                stdout=stdout,
+                stderr=StringIO(),
+                input_func=lambda _prompt: next(answers),
+            )
+
+            self.assertEqual(0, exit_code)
+            data = load_real_labels(labels_path)
+            self.assertEqual("important", data["labels"]["imap-2"]["label"])
+            self.assertEqual("ignore", data["labels"]["imap-3"]["label"])
+            raw = labels_path.read_text(encoding="utf-8")
+            self.assertNotIn("This body must not be saved.", raw)
+            self.assertNotIn("This second body must not be saved.", raw)
+
+        output = stdout.getvalue()
+        self.assertIn("Saved imap-2 -> important", output)
+        self.assertIn("Saved imap-3 -> ignore", output)
+
+    def test_label_saves_summary_and_prediction_without_body(self) -> None:
+        runtime = FakeCliRuntime(
+            execute_results=[
+                {
+                    "ok": True,
+                    "tool": "email_classify",
+                    "result": {
+                        "email": {
+                            "id": "imap-2",
+                            "from_email": "maya.chen@example.com",
+                            "subject": "Action required today",
+                        },
+                        "classification": {
+                            "category": "action_required",
+                            "importance": "high",
+                            "suggested_action": "review",
+                            "is_reportable": True,
+                            "is_ignored": False,
+                        },
+                    },
+                }
+            ]
+        )
+        with TemporaryDirectory() as temp_dir:
+            labels_path = Path(temp_dir) / "real_labels.json"
+            stdout = StringIO()
+
+            exit_code = run_cli(
+                ["label", "imap-2", "important", "--labels-path", str(labels_path)],
+                runtime_factory=lambda: runtime,
+                stdout=stdout,
+                stderr=StringIO(),
+            )
+
+            self.assertEqual(0, exit_code)
+            self.assertEqual(
+                [("email_classify", {"email_id": "imap-2"}, "email-cli")],
+                runtime.execute_calls,
+            )
+            self.assertTrue(labels_path.exists())
+            raw = labels_path.read_text(encoding="utf-8")
+            self.assertIn("Action required today", raw)
+            data = load_real_labels(labels_path)
+            record = data["labels"]["imap-2"]
+            self.assertEqual("important", record["label"])
+            self.assertEqual("action_required", record["predicted_category"])
+
+    def test_eval_real_reports_metrics_from_saved_labels(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            labels_path = Path(temp_dir) / "real_labels.json"
+            save_real_label(
+                labels_path,
+                email_id="imap-1",
+                label="important",
+                predicted_reportable=True,
+                predicted_ignored=False,
+                predicted_category="action_required",
+                predicted_importance="high",
+            )
+            save_real_label(
+                labels_path,
+                email_id="imap-2",
+                label="ignore",
+                predicted_reportable=False,
+                predicted_ignored=True,
+                predicted_category="newsletter",
+                predicted_importance="low",
+            )
+
+            stdout = StringIO()
+            exit_code = run_cli(
+                ["eval-real", "--labels-path", str(labels_path)],
+                runtime_factory=lambda: FakeCliRuntime([]),
+                stdout=stdout,
+                stderr=StringIO(),
+            )
+
+        self.assertEqual(0, exit_code)
+        output = stdout.getvalue()
+        self.assertIn("Sample count: 2", output)
+        self.assertIn("important_recall: 1.0", output)
+        self.assertIn("noise_filter_precision: 1.0", output)
+
+
+class RealEmailEvalTests(unittest.TestCase):
+    def test_real_label_evaluation_tracks_mismatches(self) -> None:
+        label_data = {
+            "schema_version": 1,
+            "labels": {
+                "imap-1": {
+                    "label": "important",
+                    "predicted_reportable": False,
+                    "predicted_ignored": True,
+                    "predicted_category": "newsletter",
+                    "predicted_importance": "low",
+                },
+                "imap-2": {
+                    "label": "ignore",
+                    "predicted_reportable": False,
+                    "predicted_ignored": True,
+                    "predicted_category": "promotion",
+                    "predicted_importance": "low",
+                },
+            },
+        }
+
+        result = evaluate_real_labels(label_data)
+
+        self.assertEqual(2, result["sample_count"])
+        self.assertEqual({"ignore": 1, "important": 1}, result["label_counts"])
+        self.assertEqual(0.0, result["metrics"]["important_recall"])
+        self.assertEqual(1, result["metrics"]["false_negative_count"])
+        self.assertEqual(["imap-1"], [item["email_id"] for item in result["mismatches"]])
+
+
 class SQLiteMemoryPersistenceTests(unittest.TestCase):
     def test_sqlite_notification_create_once_deduplicates_across_store_instances(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -691,8 +1270,9 @@ class AuthAndDevToolTests(unittest.TestCase):
 
 
 class FakeImapClient:
-    def __init__(self, messages):
+    def __init__(self, messages, mailbox_messages=None):
         self.messages = messages
+        self.mailbox_messages = mailbox_messages or {"INBOX": messages}
         self.actions = []
         self.selected = None
 
@@ -704,21 +1284,40 @@ class FakeImapClient:
         self.actions.append(("logout",))
         return "OK", [b"logged out"]
 
+    def list(self, directory='""', pattern='"*"'):
+        self.actions.append(("list", directory, pattern))
+        return "OK", [
+            b'(\\HasNoChildren) "/" "INBOX"',
+            b'(\\HasNoChildren) "/" "&UXZO1mWHTvZZOQ-"',
+            b'(\\HasNoChildren) "/" "Archive"',
+            b'(\\HasNoChildren \\Drafts) "/" "Drafts"',
+        ]
+
     def select(self, mailbox="INBOX", readonly=False):
+        mailbox = str(mailbox).strip('"')
         self.selected = (mailbox, readonly)
         self.actions.append(("select", mailbox, readonly))
-        return "OK", [str(len(self.messages)).encode()]
+        messages = self.mailbox_messages.get(mailbox, {})
+        return "OK", [str(len(messages)).encode()]
+
+    def status(self, mailbox, names):
+        mailbox = str(mailbox).strip('"')
+        self.actions.append(("status", mailbox, names))
+        messages = self.mailbox_messages.get(mailbox, {})
+        unseen = sum(1 for item in messages.values() if "\\Seen" not in item["flags"])
+        return "OK", [f'{mailbox} (MESSAGES {len(messages)} UNSEEN {unseen})'.encode()]
 
     def uid(self, command, *args):
         normalized = command.upper()
         self.actions.append(("uid", normalized, *args))
         if normalized == "SEARCH":
             criteria = args[1:]
-            ids = [message_id.encode("ascii") for message_id in sorted(self.messages, key=int)]
+            messages = self.mailbox_messages.get(self.selected[0], self.messages)
+            ids = [message_id.encode("ascii") for message_id in sorted(messages, key=int)]
             if "UNSEEN" in criteria:
                 ids = [
                     message_id.encode("ascii")
-                    for message_id, item in sorted(self.messages.items(), key=lambda entry: int(entry[0]))
+                    for message_id, item in sorted(messages.items(), key=lambda entry: int(entry[0]))
                     if "\\Seen" not in item["flags"]
                 ]
             return "OK", [b" ".join(ids)]
@@ -797,6 +1396,84 @@ class QQImapProviderTests(unittest.TestCase):
 
         self.assertEqual(["imap-2"], [item.id for item in matches])
 
+    def test_status_reports_counts_and_configured_mailboxes(self) -> None:
+        status = self.provider.status()
+
+        self.assertEqual("QQImapProvider", status["provider"])
+        self.assertEqual("us***@foxmail.com", status["email"])
+        self.assertEqual(2, status["message_count"])
+        self.assertEqual(1, status["unread_count"])
+        self.assertEqual(2, status["selected_message_count"])
+        self.assertEqual(2, status["uid_search_all_count"])
+        self.assertEqual(4, status["visible_mailbox_count"])
+        self.assertEqual("selected_mailbox", status["diagnostics"]["message_count_scope"])
+        self.assertTrue(status["archive_mailbox_exists"])
+        self.assertTrue(status["drafts_mailbox_exists"])
+
+        mailbox_counts = {item["name"]: item for item in status["mailbox_counts"]}
+        self.assertEqual(2, mailbox_counts["INBOX"]["message_count"])
+        self.assertEqual(1, mailbox_counts["INBOX"]["unread_count"])
+        self.assertEqual(0, mailbox_counts["其他文件夹"]["message_count"])
+        self.assertEqual(0, mailbox_counts["Archive"]["message_count"])
+        self.assertEqual(0, mailbox_counts["Drafts"]["message_count"])
+        self.assertTrue(mailbox_counts["INBOX"]["selected"])
+
+    def test_status_reports_per_mailbox_counts(self) -> None:
+        mailbox_messages = {
+            "INBOX": self.messages,
+            "&UXZO1mWHTvZZOQ-": {},
+            "Archive": {
+                "3": {"raw": _raw_imap_message("Archived", "Done"), "flags": {"\\Seen"}},
+                "4": {"raw": _raw_imap_message("Unread archived", "Done"), "flags": set()},
+                "5": {"raw": _raw_imap_message("Another archived", "Done"), "flags": {"\\Seen"}},
+            },
+            "Drafts": {},
+        }
+        client = FakeImapClient(self.messages, mailbox_messages=mailbox_messages)
+        provider = QQImapProvider(
+            QQImapConfig(
+                email_address="user@foxmail.com",
+                auth_code="auth-code",
+                archive_mailbox="Archive",
+                drafts_mailbox="Drafts",
+            ),
+            client_factory=lambda: client,
+        )
+
+        status = provider.status()
+
+        mailbox_counts = {item["name"]: item for item in status["mailbox_counts"]}
+        self.assertEqual(2, mailbox_counts["INBOX"]["message_count"])
+        self.assertEqual(1, mailbox_counts["INBOX"]["unread_count"])
+        self.assertEqual(0, mailbox_counts["其他文件夹"]["message_count"])
+        self.assertEqual(3, mailbox_counts["Archive"]["message_count"])
+        self.assertEqual(1, mailbox_counts["Archive"]["unread_count"])
+        self.assertEqual(0, mailbox_counts["Drafts"]["message_count"])
+        self.assertEqual(("INBOX", True), client.selected)
+
+    def test_status_accepts_encoded_configured_mailbox_names(self) -> None:
+        provider = QQImapProvider(
+            QQImapConfig(
+                email_address="user@foxmail.com",
+                auth_code="auth-code",
+                archive_mailbox="&UXZO1mWHTvZZOQ-",
+                drafts_mailbox="Drafts",
+            ),
+            client_factory=lambda: self.client,
+        )
+
+        status = provider.status()
+
+        self.assertEqual("其他文件夹", status["archive_mailbox_display"])
+        self.assertTrue(status["archive_mailbox_exists"])
+
+    def test_list_mailboxes_returns_imap_folders(self) -> None:
+        result = self.provider.list_mailboxes()
+
+        self.assertEqual("QQImapProvider", result["provider"])
+        self.assertEqual(["INBOX", "其他文件夹", "Archive", "Drafts"], [item["name"] for item in result["mailboxes"]])
+        self.assertEqual("Archive", result["configured"]["archive_mailbox"])
+
     def test_mark_read_updates_seen_flag(self) -> None:
         result = self.provider.mark_read("imap-2", is_read=True)
 
@@ -812,6 +1489,20 @@ class QQImapProviderTests(unittest.TestCase):
         self.assertIn(("uid", "STORE", "2", "+FLAGS", r"(\Deleted)"), self.client.actions)
         self.assertIn(("expunge",), self.client.actions)
 
+    def test_archive_rejects_missing_archive_mailbox(self) -> None:
+        provider = QQImapProvider(
+            QQImapConfig(
+                email_address="user@foxmail.com",
+                auth_code="auth-code",
+                archive_mailbox="MissingArchive",
+                drafts_mailbox="Drafts",
+            ),
+            client_factory=lambda: self.client,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "archive mailbox not found"):
+            provider.archive("imap-2")
+
     def test_create_draft_appends_to_drafts_mailbox(self) -> None:
         result = self.provider.create_draft("imap-2", "Thanks, I will review.")
 
@@ -821,6 +1512,20 @@ class QQImapProviderTests(unittest.TestCase):
         self.assertEqual(1, len(append_actions))
         self.assertEqual("Drafts", append_actions[0][1])
         self.assertIn(b"Thanks, I will review.", append_actions[0][4])
+
+    def test_create_draft_rejects_missing_drafts_mailbox(self) -> None:
+        provider = QQImapProvider(
+            QQImapConfig(
+                email_address="user@foxmail.com",
+                auth_code="auth-code",
+                archive_mailbox="Archive",
+                drafts_mailbox="MissingDrafts",
+            ),
+            client_factory=lambda: self.client,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "drafts mailbox not found"):
+            provider.create_draft("imap-2", "Thanks, I will review.")
 
     def test_provider_factory_supports_qq_imap(self) -> None:
         with patch.dict(

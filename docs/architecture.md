@@ -1,143 +1,90 @@
 # 系统架构
 
-## 总体架构
+## 总体结构
 
 ```text
-FastAPI Server
-  - AgentRuntime
-  - ToolRegistry
-  - Email tools
-  - MemoryStore
-  - TraceLogger
-  - API auth / redaction boundary
-
-Email Domain
-  - EmailProvider
-  - Rule-based classifier
-  - Preference memory
-  - Scheduler core
-  - Evaluation
+FastAPI
+  -> AgentRuntime
+     -> ToolRegistry
+     -> MemoryStore
+     -> TraceLogger
+     -> Email tools
+        -> EmailProvider
+        -> classifier
+        -> scheduler
+        -> evaluation
 ```
 
-核心原则：服务端 headless-first，当前开发和验证直接在 Mac 本地运行 server/tool runtime。
+当前运行方式是 headless-first。Mac 本地直接运行 server、CLI 和测试；旧客户端暂不参与主验证链路。
 
-## 目录结构
+## 核心模块
 
-```text
-server/
-  FastAPI 服务端，承载 Agent runtime、tools、邮件分拣逻辑。
+`server/app/agent.py`
+Agent runtime、OpenAI tool calling、SSE streaming、manual tool execution、approval API、trace 串联。
 
-server/app/tools.py
-  通用 tool registry、权限、校验、审批。
+`server/app/tools.py`
+通用 tool registry、schema 校验、权限分级、pending approval、开发工具安全策略。
 
-server/app/agent.py
-  AgentRuntime、OpenAI tool calling、trace 串联。
+`server/app/email_tools.py`
+邮件工具注册、规则分类器、偏好工具、scheduler/eval tool 入口。
 
-server/app/email_provider.py
-  邮件 provider 抽象和 MockEmailProvider。
+`server/app/email_provider.py`
+`EmailProvider` 协议和 `MockEmailProvider`。
 
-server/app/provider_factory.py
-  运行时 provider 工厂，根据 WISPERA_EMAIL_PROVIDER 装配当前邮箱 provider。
+`server/app/qq_imap_provider.py`
+QQ/Foxmail IMAP provider。负责 IMAP 登录、文件夹发现、邮件读取、MIME/HTML 清洗和 approval 后的写操作。
 
-server/app/email_tools.py
-  邮件 tools 注册、规则分类器、偏好工具、scheduler/eval 工具入口。
+`server/email_cli.py`
+本地测试 CLI。用于真实邮箱 status/mailboxes/recent/detail/search/report/review，以及 approval-gated mark-read/archive/star/draft。
 
-server/app/email_scheduler.py
-  Headless scheduler 核心。
+`server/app/memory.py` / `server/app/sqlite_state.py`
+进程内状态和可选 SQLite 后端。SQLite 只持久化 preferences、reported ids、notifications、scan history。
 
-server/app/email_eval.py
-  Mock 评估框架，支持 rule classifier 和 LLM shadow classifier。
+`server/app/tracer.py` / `server/app/redaction.py`
+JSONL trace 和脱敏边界。
 
-server/app/email_eval_report.py
-  评估报告导出。
+## Tool 权限模型
 
-server/app/llm_email_classifier.py
-  LLM shadow 分类器，只对 mock 邮件输出结构化分类，不连接真实邮箱。
+工具权限分三类：
 
-server/app/runtime_env.py
-  服务端环境变量加载，读取 server/.env。
+- `read`：读取邮箱或本地状态。
+- `write`：修改本地低风险状态，例如偏好、通知已读。
+- `dangerous`：修改真实邮箱或执行系统命令，必须 pending approval。
 
-server/app/memory.py
-  会话、note、email preference、scheduler state。
-
-server/app/sqlite_state.py
-  可选 SQLite 状态后端，用于持久化 email preferences、scheduler notifications、reported email ids 和 scan history。
-
-server/app/tracer.py
-  JSONL trace。
-
-tests/
-  服务端回归测试。
-```
-
-## Tool Runtime
-
-每个工具由 `ToolSpec` 描述：
-
-- `name`
-- `description`
-- `input_schema`
-- `handler`
-- `permission`
-
-权限分三类：
-
-- `read`：读取状态，不改变外部或本地关键状态。
-- `write`：修改本地偏好、通知等低风险状态。
-- `dangerous`：修改邮箱或执行系统命令，必须进入 pending approval。
-
-危险工具执行流程：
+危险工具流程：
 
 ```text
-execute_tool
+tool call
 -> schema validation
 -> policy check
--> permission check
--> pending tool call
--> user approve/reject
+-> create pending_tool_call_id
+-> wait for approve/reject
 -> approved execution
 -> trace
 ```
 
-通用开发工具边界：
+当前 dangerous 邮件工具：
 
-- `list_files`、`read_text_file`、`run_shell_command` 只用于本地开发调试。
-- 默认不注册给 Agent；只有设置 `WISPERA_DEV_TOOLS=1` 时才启用。
-- 即使启用，文件工具也不能读取 `.env`、`.wispera/`、虚拟环境、lock 文件等敏感或噪声路径。
-- shell 工具仍是 `dangerous`，必须审批；策略层会拒绝 shell 控制符、重定向、Python 任意代码执行和高风险命令。
+- `email_archive`
+- `email_mark_read`
+- `email_star`
+- `email_create_draft`
 
-## API Boundary
+Agent runtime 在遇到 pending approval 时立即停止本轮 tool loop。审批或拒绝由 `/tools/approve`、`/tools/reject` 或 CLI 的 `--yes` 流程完成。
 
-服务端支持 `WISPERA_AUTH_TOKEN`。设置后，除 `/health` 外的 API 都必须携带：
+## Provider 装配
 
-```text
-Authorization: Bearer <token>
-```
+`WISPERA_EMAIL_PROVIDER` 支持：
 
-当前默认仍允许无 token 的本地开发模式，但只适合绑定 `127.0.0.1` 的本机 demo。Docker 容器内部绑定 `0.0.0.0` 以便端口映射，compose 默认只映射到宿主机 localhost，避免无意暴露到局域网。
+- 空值 / `mock`
+- `qq-imap`
+- `qq`
+- `foxmail`
+- `foxmail-imap`
 
-## 邮件 Provider 抽象
+未知 provider 会让 runtime 创建失败，避免配置拼错后静默回退到 mock。
 
-当前运行时通过 `WISPERA_EMAIL_PROVIDER` 选择 provider。现在支持：
-
-- 空值 / `mock`：`MockEmailProvider`
-- `qq-imap` / `qq` / `foxmail` / `foxmail-imap`：`QQImapProvider`
-
-未知 provider 会在 runtime 创建阶段直接失败，避免配置拼错后静默回退到 mock。
-
-QQ/Foxmail provider 使用 IMAP over SSL 和邮箱授权码。当前支持：
-
-- `list_recent`
-- `get_detail`
-- `search`
-- `mark_read`
-- `archive`
-- `star`
-- `create_draft`
-
-所有真实邮箱写操作仍通过 dangerous tool approval 执行。`create_draft` 只把草稿追加到 IMAP 草稿箱，不发送邮件；send / delete 不在当前范围。
-
-Provider 接口：
+Provider 接口保持上层稳定：
 
 - `list_recent`
 - `get_detail`
@@ -147,16 +94,46 @@ Provider 接口：
 - `star`
 - `create_draft`
 
-后续如果增加其他 provider，也不应该改变上层 tool、classifier、scheduler、eval 的调用方式。
+QQ/Foxmail 写操作实现：
 
-## 分类器
+- `mark_read`：IMAP `STORE \Seen`
+- `archive`：`COPY` 到归档文件夹，再给原邮件 `\Deleted` 并 `EXPUNGE`
+- `star`：IMAP `STORE \Flagged`
+- `create_draft`：IMAP `APPEND` 到草稿箱，返回 `sent: false`
 
-当前有两类分类器：
+## State 边界
 
-- deterministic rule-based baseline
-- LLM shadow classifier
+默认状态在内存中，适合本地开发和测试。设置 `WISPERA_STATE_DB=data/wispera_state.db` 后启用 SQLite。
 
-返回结构：
+持久化：
+
+- email preferences
+- reported email ids
+- notifications
+- scan history
+
+不持久化：
+
+- pending approval
+- chat history
+- draft metadata
+- evaluation runs
+- 真实邮件正文
+
+`MemoryStore` 和 `ToolRegistry` 使用进程内锁。Scheduler notification 创建走 `create_email_notification_once()`，SQLite 模式下通过唯一约束和事务防止重复通知。
+
+## 安全边界
+
+- 设置 `WISPERA_AUTH_TOKEN` 后，除 `/health` 外 API 都需要 bearer token。
+- 开发工具默认关闭，仅 `WISPERA_DEV_TOOLS=1` 时注册。
+- 文件工具拒绝读取 `.env`、`.wispera/`、虚拟环境、lock 文件和常见密钥路径。
+- shell 工具即使启用也是 `dangerous`，并拒绝控制符、重定向、管道和高风险命令。
+- Trace 和 pending 列表只保存脱敏摘要。
+- Mock eval 永远使用 `MockEmailProvider`，不会跟随 active provider 读取真实邮箱。
+
+## 分类与评估
+
+规则分类器输出：
 
 - `category`
 - `importance`
@@ -166,98 +143,4 @@ Provider 接口：
 - `is_reportable`
 - `is_ignored`
 
-为什么先用规则：
-
-- 无 API key 也可运行
-- 可解释
-- 可测试
-- 方便作为 LLM classifier 的 baseline
-
-LLM shadow classifier 的边界：
-
-- 只读取 mock 邮件数据
-- 只输出结构化分类
-- 不调用工具
-- 不修改邮箱状态
-- 输出会经过 JSON 解析、枚举校验和评估指标统计
-
-## State
-
-默认状态保存在进程内存中：
-
-- chat history
-- free-form notes
-- email preferences
-- scheduler state
-
-设置 `WISPERA_STATE_DB` 后，以下状态通过 SQLite 持久化：
-
-- email preferences
-- reported email ids
-- notifications
-- scan history
-
-启用方式：
-
-```text
-WISPERA_STATE_DB=data/wispera_state.db
-```
-
-装配路径：
-
-```text
-AgentRuntime.create
--> load_server_env
--> WISPERA_STATE_DB
--> SQLiteStateStore
--> MemoryStore(state_store=...)
-```
-
-持久化边界：
-
-- 默认不设置 `WISPERA_STATE_DB` 时仍使用内存，保持测试和本地 demo 快速。
-- SQLite 只存服务端本地状态，不存真实邮箱正文。
-- `MemoryStore` 和 `ToolRegistry` 都有进程内锁，避免同一 server 进程内的并发请求破坏内存状态。
-- scheduler notification 通过 `MemoryStore.create_email_notification_once()` 创建，内存模式下在同一锁内完成去重和写入。
-- SQLite 模式下，`SQLiteStateStore.create_email_notification_once()` 在同一事务里插入 reported email id 并保存 notification；多个 runtime / SQLite 连接共享同一 DB 时，重复 email id 会被唯一约束拒绝。
-- pending approval 不持久化，避免重启后误执行旧的危险动作。
-- chat history 不持久化，避免扩大隐私面。
-- draft metadata 和 evaluation runs 暂不持久化。
-- SQLite 连接可以通过 `AgentRuntime.close()` / `MemoryStore.close()` 显式释放，便于本地测试清理数据库文件句柄。
-
-## Scheduler
-
-当前 scheduler 是 headless core，不是后台线程。
-
-它能：
-
-- 手动触发扫描
-- 读取 unread 邮件
-- 分类
-- 创建本地 notification
-- 按 email id 去重，避免同一邮件重复通知
-- 生成 digest
-
-它不能：
-
-- 归档邮件
-- 标记已读
-- 加星
-- 创建草稿
-- 发送或删除邮件
-
-## Trace
-
-每次手动 tool execution 和 agent turn 都有 `trace_id`。
-
-Trace 记录：
-
-- turn start/end
-- tool call
-- tool result
-- pending approval
-- approve/reject decision
-
-Trace 只记录脱敏后的摘要。邮件正文、草稿正文、API key、`.env` 内容和过长工具结果不应该进入 trace。pending approval 列表也只暴露参数摘要，避免在审批面板里泄露完整草稿或正文。
-
-后续真实邮箱接入时，Provider 层仍需要控制 `detail` 返回正文长度；Trace 层负责二次脱敏，避免真实邮箱正文或敏感配置落盘。
+LLM classifier 目前只做 shadow eval，不接真实邮箱，也不执行工具。真实邮箱评估通过 CLI 人工标注摘要样本完成，标签文件不保存正文。
