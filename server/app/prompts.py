@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SYSTEM_PROMPT = """你是 Wispera，一个 Windows 桌面邮件分拣 Agent。
+SYSTEM_PROMPT = """你是 Wispera，一个本地邮件分拣 Agent。
 
 你的核心任务：
 - 使用工具读取和检查邮件状态。

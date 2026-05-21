@@ -255,17 +255,26 @@ class AgentRuntime:
                 yield _sse_event("done", {"trace_id": trace_id, "text": assistant_text})
                 return
 
-            assistant_text, tool_calls = self._run_agent(client, session_id, trace_id)
+            assistant_text, tool_calls, turn_status = self._run_agent(client, session_id, trace_id)
             for chunk in _chunks(assistant_text):
                 yield _sse_event("token", {"trace_id": trace_id, "delta": chunk, "text": assistant_text})
             self.memory_store.append(session_id, "assistant", assistant_text)
-            self.tracer.finish_turn(
-                trace_id,
-                status="ok",
-                assistant_text=assistant_text,
-                tool_calls=tool_calls,
+            if turn_status != "pending":
+                self.tracer.finish_turn(
+                    trace_id,
+                    status=turn_status,
+                    assistant_text=assistant_text,
+                    tool_calls=tool_calls,
+                )
+            yield _sse_event(
+                "done",
+                {
+                    "trace_id": trace_id,
+                    "text": assistant_text,
+                    "tool_calls": tool_calls,
+                    "status": turn_status,
+                },
             )
-            yield _sse_event("done", {"trace_id": trace_id, "text": assistant_text, "tool_calls": tool_calls})
         except Exception as exc:  # pragma: no cover - defensive boundary
             self.tracer.finish_turn(trace_id, status="error")
             yield _sse_event(
@@ -295,7 +304,7 @@ class AgentRuntime:
         message = response.choices[0].message
         return (message.content or "").strip() or self._fallback_reply("simple", "")
 
-    def _run_agent(self, client: "OpenAI", session_id: str, trace_id: str) -> tuple[str, int]:
+    def _run_agent(self, client: "OpenAI", session_id: str, trace_id: str) -> tuple[str, int, str]:
         messages = self._build_messages(session_id, mode="agent")
         tool_calls_total = 0
         context = ToolContext(
@@ -353,6 +362,19 @@ class AgentRuntime:
                                 "reason": result.get("reason"),
                             },
                         )
+                        self.tracer.log_event(
+                            trace_id,
+                            "tool_result",
+                            {
+                                "tool": tool_call.function.name,
+                                "result": result,
+                                "tool_call_id": tool_call.id,
+                            },
+                        )
+                        return _pending_approval_text(
+                            tool_call.function.name,
+                            str(result.get("pending_tool_call_id", "")),
+                        ), tool_calls_total, "pending"
                     self.tracer.log_event(
                         trace_id,
                         "tool_result",
@@ -373,11 +395,20 @@ class AgentRuntime:
 
             assistant_text = (message.content or "").strip()
             if assistant_text:
-                return assistant_text, tool_calls_total
+                return assistant_text, tool_calls_total, "ok"
 
-            return self._fallback_reply("agent", ""), tool_calls_total
+            return self._fallback_reply("agent", ""), tool_calls_total, "ok"
 
-        return "我暂时没法把任务收束成一个结果。", tool_calls_total
+        return "我暂时没法把任务收束成一个结果。", tool_calls_total, "ok"
+
+
+def _pending_approval_text(tool_name: str, pending_tool_call_id: str) -> str:
+    return (
+        f"该操作需要审批，已创建 pending tool call。\n"
+        f"- tool: `{tool_name}`\n"
+        f"- pending_tool_call_id: `{pending_tool_call_id}`\n"
+        "请确认后再批准或拒绝。"
+    )
 
 
 def _state_db_path(raw_path: str) -> str:

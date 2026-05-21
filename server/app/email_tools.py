@@ -130,6 +130,28 @@ BULK_LOCAL_PARTS = (
 def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None = None) -> None:
     email_provider = provider or MockEmailProvider()
 
+    def email_provider_status(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        status = getattr(email_provider, "status", None)
+        if status:
+            return status()
+        return {
+            "provider": type(email_provider).__name__,
+            "status": "available",
+            "mailbox_mutation": True,
+        }
+
+    def email_list_mailboxes(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        list_mailboxes = getattr(email_provider, "list_mailboxes", None)
+        if not list_mailboxes:
+            return {
+                "provider": type(email_provider).__name__,
+                "supported": False,
+                "mailboxes": [],
+            }
+        result = list_mailboxes()
+        result["supported"] = True
+        return result
+
     def email_list_recent(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         limit = _bounded_int(args.get("limit"), default=20, minimum=1, maximum=100)
         unread_only = bool(args.get("unread_only", False))
@@ -436,6 +458,24 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
             "evaluation": _compact_evaluation(evaluation, include_rows=include_rows),
         }
 
+    registry.register(
+        ToolSpec(
+            name="email_provider_status",
+            description="Check the active email provider connection and configured mailbox state without returning message bodies.",
+            input_schema=_schema({}),
+            handler=email_provider_status,
+            permission=ToolPermission.READ,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_list_mailboxes",
+            description="List mailboxes/folders from the active provider when supported.",
+            input_schema=_schema({}),
+            handler=email_list_mailboxes,
+            permission=ToolPermission.READ,
+        )
+    )
     registry.register(
         ToolSpec(
             name="email_list_recent",

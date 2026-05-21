@@ -125,7 +125,7 @@ def _markdown_report(evaluation: dict[str, Any], *, title: str) -> str:
     lines.extend(
         [
             "",
-            "## Interview Notes",
+            "## Evaluation Notes",
             "",
             "- Important recall tracks whether important mail was missed.",
             "- Important precision tracks whether reported mail was actually important.",

@@ -8,6 +8,7 @@ import imaplib
 import os
 import re
 import uuid
+from base64 import b64decode
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.header import decode_header, make_header
@@ -32,7 +33,9 @@ SEARCH_SCAN_LIMIT = 80
 class ImapClient(Protocol):
     def login(self, user: str, password: str) -> Any: ...
     def logout(self) -> Any: ...
+    def list(self, directory: str = '""', pattern: str = '"*"') -> tuple[str, list[Any]]: ...
     def select(self, mailbox: str = "INBOX", readonly: bool = False) -> Any: ...
+    def status(self, mailbox: str, names: str) -> tuple[str, list[Any]]: ...
     def uid(self, command: str, *args: Any) -> tuple[str, list[Any]]: ...
     def expunge(self) -> tuple[str, list[Any]]: ...
     def append(self, mailbox: str, flags: str | None, date_time: Any, message: bytes) -> tuple[str, list[Any]]: ...
@@ -116,9 +119,63 @@ class QQImapProvider:
                         break
             return matches
 
+    def status(self) -> dict[str, Any]:
+        with self._connection(readonly=True) as client:
+            selected_count = _select_count(getattr(client, "_wispera_selected_payload", []))
+            all_ids = self._search_ids(client, "ALL")
+            unseen_ids = self._search_ids(client, "UNSEEN")
+            mailboxes = self._list_mailboxes_locked(client)
+            mailbox_counts = self._mailbox_counts_locked(client, mailboxes)
+        current_mailbox_count = _find_mailbox_count(mailbox_counts, self.config.mailbox)
+        return {
+            "provider": type(self).__name__,
+            "host": self.config.host,
+            "port": self.config.port,
+            "email": _masked_email(self.config.email_address),
+            "mailbox": self.config.mailbox,
+            "mailbox_display": _decode_imap_mailbox_name(self.config.mailbox),
+            "selected_mailbox": self.config.mailbox,
+            "selected_message_count": selected_count,
+            "message_count": len(all_ids),
+            "unread_count": len(unseen_ids),
+            "uid_search_all_count": len(all_ids),
+            "mailbox_counts": mailbox_counts,
+            "current_mailbox_count": current_mailbox_count,
+            "visible_mailbox_count": len(mailboxes),
+            "archive_mailbox": self.config.archive_mailbox,
+            "archive_mailbox_display": _decode_imap_mailbox_name(self.config.archive_mailbox),
+            "archive_mailbox_exists": _mailbox_exists_in_list(mailboxes, self.config.archive_mailbox),
+            "drafts_mailbox": self.config.drafts_mailbox,
+            "drafts_mailbox_display": _decode_imap_mailbox_name(self.config.drafts_mailbox),
+            "drafts_mailbox_exists": _mailbox_exists_in_list(mailboxes, self.config.drafts_mailbox),
+            "diagnostics": {
+                "message_count_scope": "selected_mailbox",
+                "message_count_source": "UID SEARCH ALL",
+                "selected_message_count_source": "IMAP SELECT response",
+            },
+        }
+
+    def list_mailboxes(self) -> dict[str, Any]:
+        with self._connection(readonly=True) as client:
+            mailboxes = self._list_mailboxes_locked(client)
+        return {
+            "provider": type(self).__name__,
+            "mailboxes": mailboxes,
+            "configured": {
+                "mailbox": self.config.mailbox,
+                "archive_mailbox": self.config.archive_mailbox,
+                "drafts_mailbox": self.config.drafts_mailbox,
+            },
+        }
+
     def archive(self, email_id: str) -> dict[str, Any]:
         uid = _uid(email_id)
         with self._connection(readonly=False) as client:
+            if not self._mailbox_exists_locked(client, self.config.archive_mailbox):
+                raise RuntimeError(
+                    f"archive mailbox not found: {self.config.archive_mailbox}. "
+                    "Run email_list_mailboxes and set WISPERA_QQ_ARCHIVE_MAILBOX to an existing mailbox."
+                )
             copy_status, _ = client.uid("COPY", uid, self.config.archive_mailbox)
             _ensure_ok(copy_status, "copy message to archive mailbox")
             store_status, _ = client.uid("STORE", uid, "+FLAGS", r"(\Deleted)")
@@ -166,6 +223,11 @@ class QQImapProvider:
         draft["Message-ID"] = f"<wispera-{uuid.uuid4().hex}@local>"
         draft.set_content(body)
         with self._connection(readonly=False) as client:
+            if not self._mailbox_exists_locked(client, self.config.drafts_mailbox):
+                raise RuntimeError(
+                    f"drafts mailbox not found: {self.config.drafts_mailbox}. "
+                    "Run email_list_mailboxes and set WISPERA_QQ_DRAFTS_MAILBOX to an existing mailbox."
+                )
             status, _ = client.append(self.config.drafts_mailbox, r"(\Draft)", None, draft.as_bytes())
             _ensure_ok(status, "append draft message")
         return {
@@ -201,6 +263,46 @@ class QQImapProvider:
         parsed = email.message_from_bytes(raw_message)
         return _message_to_email(message_id, parsed, flags)
 
+    def _list_mailboxes_locked(self, client: ImapClient) -> list[dict[str, Any]]:
+        status, payload = client.list()
+        _ensure_ok(status, "list IMAP mailboxes")
+        return [_parse_mailbox_line(item) for item in payload if item]
+
+    def _mailbox_exists_locked(self, client: ImapClient, mailbox: str) -> bool:
+        return _mailbox_exists_in_list(self._list_mailboxes_locked(client), mailbox)
+
+    def _mailbox_counts_locked(self, client: ImapClient, mailboxes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        counts = []
+        for item in mailboxes:
+            mailbox = item["name"]
+            selectable_name = item.get("select_name") or mailbox
+            entry = {
+                "name": mailbox,
+                "flags": item.get("flags", []),
+                "selectable": "\\Noselect" not in item.get("flags", []),
+                "selected": mailbox == self.config.mailbox,
+                "status_available": True,
+                "message_count": None,
+                "unread_count": None,
+                "error": "",
+            }
+            if not entry["selectable"]:
+                counts.append(entry)
+                continue
+            try:
+                status, payload = client.status(selectable_name, "(MESSAGES UNSEEN)")
+                _ensure_ok(status, f"read mailbox status {mailbox}")
+                status_counts = _parse_status_counts(payload)
+                if "MESSAGES" not in status_counts or "UNSEEN" not in status_counts:
+                    entry["status_available"] = False
+                else:
+                    entry["message_count"] = status_counts["MESSAGES"]
+                    entry["unread_count"] = status_counts["UNSEEN"]
+            except Exception as exc:  # pragma: no cover - defensive IMAP diagnostics
+                entry["error"] = f"{type(exc).__name__}: {exc}"
+            counts.append(entry)
+        return counts
+
 
 class _QQImapConnection:
     def __init__(self, client: ImapClient, config: QQImapConfig, *, readonly: bool) -> None:
@@ -211,8 +313,12 @@ class _QQImapConnection:
     def __enter__(self) -> ImapClient:
         status, _ = self.client.login(self.config.email_address, self.config.auth_code)
         _ensure_ok(status, "login to QQ IMAP")
-        status, _ = self.client.select(self.config.mailbox, readonly=self.readonly)
+        status, payload = self.client.select(self.config.mailbox, readonly=self.readonly)
         _ensure_ok(status, f"select mailbox {self.config.mailbox}")
+        try:
+            setattr(self.client, "_wispera_selected_payload", payload)
+        except Exception:
+            pass
         return self.client
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -345,6 +451,103 @@ def _extract_flags(payload: list[Any]) -> set[str]:
 def _ensure_ok(status: Any, action: str) -> None:
     if str(status).upper() != "OK":
         raise RuntimeError(f"failed to {action}: {status}")
+
+
+def _select_count(payload: Any) -> int | None:
+    if not payload:
+        return None
+    first = payload[0]
+    raw = first.decode("ascii", errors="ignore") if isinstance(first, bytes) else str(first)
+    match = re.search(r"\d+", raw)
+    return int(match.group(0)) if match else None
+
+
+def _parse_status_counts(payload: list[Any]) -> dict[str, int]:
+    if not payload:
+        return {}
+    text = " ".join(item.decode("utf-8", errors="replace") if isinstance(item, bytes) else str(item) for item in payload)
+    pairs = re.findall(r"\b(MESSAGES|UNSEEN)\s+(\d+)\b", text, flags=re.IGNORECASE)
+    return {key.upper(): int(value) for key, value in pairs}
+
+
+def _find_mailbox_count(mailbox_counts: list[dict[str, Any]], mailbox: str) -> dict[str, Any] | None:
+    for item in mailbox_counts:
+        if item.get("name") == mailbox:
+            return item
+    return None
+
+
+def _parse_mailbox_line(raw: Any) -> dict[str, Any]:
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+    flags = re.findall(r"\\[A-Za-z]+", text)
+    match = re.search(r'\)\s+"(?P<delimiter>[^"]*)"\s+(?P<name>.+)$', text)
+    delimiter = ""
+    name = text.strip()
+    if match:
+        delimiter = match.group("delimiter")
+        name = match.group("name").strip()
+    if name.startswith('"') and name.endswith('"') and len(name) >= 2:
+        name = name[1:-1]
+    return {
+        "name": _decode_imap_mailbox_name(name),
+        "raw_name": name,
+        "select_name": _quote_mailbox_name(name),
+        "delimiter": delimiter,
+        "flags": flags,
+        "raw": text,
+    }
+
+
+def _mailbox_exists_in_list(mailboxes: list[dict[str, Any]], mailbox: str) -> bool:
+    configured = str(mailbox).strip().strip('"')
+    configured_decoded = _decode_imap_mailbox_name(configured)
+    for item in mailboxes:
+        if configured == item.get("raw_name"):
+            return True
+        if configured == item.get("name"):
+            return True
+        if configured_decoded == item.get("name"):
+            return True
+    return False
+
+
+def _decode_imap_mailbox_name(name: str) -> str:
+    parts = []
+    index = 0
+    while index < len(name):
+        if name[index] != "&":
+            parts.append(name[index])
+            index += 1
+            continue
+        end = name.find("-", index)
+        if end == -1:
+            parts.append(name[index:])
+            break
+        token = name[index + 1 : end]
+        if token == "":
+            parts.append("&")
+        else:
+            try:
+                encoded = token.replace(",", "/")
+                encoded += "=" * ((4 - len(encoded) % 4) % 4)
+                parts.append(b64decode(encoded).decode("utf-16-be"))
+            except Exception:
+                parts.append(name[index : end + 1])
+        index = end + 1
+    return "".join(parts)
+
+
+def _quote_mailbox_name(name: str) -> str:
+    escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _masked_email(email_address: str) -> str:
+    if "@" not in email_address:
+        return "***"
+    local, domain = email_address.split("@", 1)
+    prefix = local[:2] if len(local) > 2 else local[:1]
+    return f"{prefix}***@{domain}"
 
 
 def _bounded_limit(limit: int) -> int:
