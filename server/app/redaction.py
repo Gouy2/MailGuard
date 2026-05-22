@@ -10,10 +10,12 @@ SENSITIVE_KEY_PARTS = (
     "authorization",
     "body",
     "content",
+    "assistant_text",
     "password",
     "raw_response",
     "secret",
     "token",
+    "user_message",
 )
 MAX_STRING_PREVIEW = 300
 MAX_LIST_ITEMS = 20

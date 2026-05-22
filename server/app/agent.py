@@ -57,6 +57,20 @@ def _safe_json_loads(raw: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {"_value": data}
 
 
+READ_ONLY_AGENT_MODE = "agent_readonly"
+MAILBOX_READ_ONLY_TOOLS = {
+    "email_provider_status",
+    "email_list_mailboxes",
+    "email_list_recent",
+    "email_search",
+    "email_get_detail",
+    "email_classify",
+    "email_report_important",
+    "email_list_ignored",
+    "email_get_preferences",
+}
+
+
 @dataclass(slots=True)
 class AgentRuntime:
     memory_store: MemoryStore
@@ -76,8 +90,8 @@ class AgentRuntime:
     def simple_tools(self) -> list[dict[str, Any]]:
         return []
 
-    def agent_tools(self) -> list[dict[str, Any]]:
-        return self.tool_registry.openai_tools()
+    def agent_tools(self, mode: str = "agent") -> list[dict[str, Any]]:
+        return [tool.as_openai_tool() for tool in self._tools_for_mode(mode)]
 
     def health(self) -> dict[str, Any]:
         return {
@@ -101,7 +115,7 @@ class AgentRuntime:
             "notes": self.memory_store.notes(session_id, limit=limit),
         }
 
-    def tool_inventory(self) -> list[dict[str, Any]]:
+    def tool_inventory(self, mode: str | None = None) -> list[dict[str, Any]]:
         return [
             {
                 "name": tool.name,
@@ -110,8 +124,19 @@ class AgentRuntime:
                 "requires_confirmation": tool.permission.value == "dangerous",
                 "schema": tool.input_schema,
             }
-            for tool in self.tool_registry.list()
+            for tool in (self._tools_for_mode(mode) if mode else self.tool_registry.list())
         ]
+
+    def _tools_for_mode(self, mode: str | None) -> list[Any]:
+        tools = self.tool_registry.list()
+        if mode == READ_ONLY_AGENT_MODE:
+            return [tool for tool in tools if tool.name in MAILBOX_READ_ONLY_TOOLS]
+        return tools
+
+    def _tool_allowed_in_mode(self, tool_name: str, mode: str) -> bool:
+        if mode == READ_ONLY_AGENT_MODE:
+            return tool_name in MAILBOX_READ_ONLY_TOOLS
+        return True
 
     def pending_tools(self) -> list[dict[str, Any]]:
         return self.tool_registry.pending()
@@ -255,7 +280,7 @@ class AgentRuntime:
                 yield _sse_event("done", {"trace_id": trace_id, "text": assistant_text})
                 return
 
-            assistant_text, tool_calls, turn_status = self._run_agent(client, session_id, trace_id)
+            assistant_text, tool_calls, turn_status = self._run_agent(client, session_id, trace_id, mode=mode)
             for chunk in _chunks(assistant_text):
                 yield _sse_event("token", {"trace_id": trace_id, "delta": chunk, "text": assistant_text})
             self.memory_store.append(session_id, "assistant", assistant_text)
@@ -286,7 +311,7 @@ class AgentRuntime:
             )
 
     def _build_messages(self, session_id: str, mode: str) -> list[dict[str, Any]]:
-        messages = [{"role": "system", "content": build_system_prompt(mode, self.tool_inventory())}]
+        messages = [{"role": "system", "content": build_system_prompt(mode, self.tool_inventory(mode=mode))}]
         messages.extend(self.memory_store.get(session_id, limit=20))
         return messages
 
@@ -304,12 +329,13 @@ class AgentRuntime:
         message = response.choices[0].message
         return (message.content or "").strip() or self._fallback_reply("simple", "")
 
-    def _run_agent(self, client: "OpenAI", session_id: str, trace_id: str) -> tuple[str, int, str]:
-        messages = self._build_messages(session_id, mode="agent")
+    def _run_agent(self, client: "OpenAI", session_id: str, trace_id: str, *, mode: str) -> tuple[str, int, str]:
+        messages = self._build_messages(session_id, mode=mode)
         tool_calls_total = 0
         context = ToolContext(
             session_id=session_id,
             memory_store=self.memory_store,
+            mode=mode,
             trace_id=trace_id,
         )
 
@@ -317,7 +343,7 @@ class AgentRuntime:
             response = client.chat.completions.create(
                 model=_model_name(),
                 messages=messages,
-                tools=self.agent_tools(),
+                tools=self.agent_tools(mode=mode),
                 tool_choice="auto",
             )
             message = response.choices[0].message
@@ -342,6 +368,22 @@ class AgentRuntime:
                 for tool_call in tool_calls:
                     tool_calls_total += 1
                     arguments = _safe_json_loads(tool_call.function.arguments or "{}")
+                    if not self._tool_allowed_in_mode(tool_call.function.name, mode):
+                        self.tracer.log_event(
+                            trace_id,
+                            "tool_blocked",
+                            {
+                                "tool": tool_call.function.name,
+                                "mode": mode,
+                                "reason": "tool is not allowed in this agent mode",
+                                "tool_call_id": tool_call.id,
+                            },
+                        )
+                        return (
+                            f"当前只读模式不允许调用 `{tool_call.function.name}`。我没有执行任何邮箱修改操作。",
+                            tool_calls_total,
+                            "blocked",
+                        )
                     self.tracer.log_event(
                         trace_id,
                         "tool_call",

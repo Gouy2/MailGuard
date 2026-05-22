@@ -11,7 +11,7 @@ python3 -m unittest tests.test_email_tools
 当前结果：
 
 ```text
-62 tests OK
+67 tests OK
 ```
 
 编译检查：
@@ -25,8 +25,11 @@ python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.
 - 规则分类器和 mock report。
 - dangerous approval、approve 后 mutation、reject 后不 mutation。
 - Agent tool-use 遇到 pending approval 后立即停止。
+- agent read-only 模式：只暴露读工具，异常写工具调用会被阻断。
+- real pending write smoke：真实 provider 下写工具只创建 pending 并立即 reject。
 - deterministic agent smoke：mock read tool、多步 tool-use、approve/reject。
 - HTTP approval / trace CLI：SSE 解析、pending/approve/reject/trace、auth header。
+- Trace 文本脱敏：user message / assistant text 不落明文。
 - 结构化偏好和分类影响。
 - scheduler 扫描、去重、notification、digest。
 - SQLite persistence 和跨 store 去重。
@@ -97,6 +100,53 @@ uv run python agent_smoke.py --live
 
 如果 live 模式失败，先看输出中的 `failure_reason` 和 `trace_id`；它通常说明模型没有调用工具、模型 API 不可用，或 tool-call schema 兼容性问题。
 
+真实 QQ/Foxmail 只读 agent smoke：
+
+```bash
+cd server
+uv run python agent_smoke.py --real-readonly
+```
+
+边界：
+
+- 使用 `.env` 中配置的真实 QQ/Foxmail provider。
+- 使用真实 LLM。
+- 使用 `agent_readonly` 模式，只暴露只读工具。
+- 不输出 assistant 邮件摘要，只输出状态、工具名、trace id 和是否使用写工具。
+
+验收条件：
+
+- `mode=real_readonly`。
+- provider 为 `QQImapProvider`。
+- `done_status=ok`。
+- `used_read_tool=true`。
+- `used_write_tool=false`。
+- `mailbox_mutation=not_allowed`。
+
+真实 QQ/Foxmail pending write smoke：
+
+```bash
+cd server
+uv run python agent_smoke.py --real-pending-write
+```
+
+边界：
+
+- 使用 `.env` 中配置的真实 QQ/Foxmail provider。
+- 只读选择一封最近邮件作为目标。
+- 依次触发 `email_mark_read`、`email_archive`、`email_star`、`email_create_draft` 的 pending。
+- 每个 pending 立即 reject。
+- 不调用 approve，不执行真实邮箱 mutation。
+
+验收条件：
+
+- `mode=real_pending_write`。
+- provider 为 `QQImapProvider`。
+- 四个 scenario 都是 `done_status=pending`。
+- 每个 scenario 都 `pending_created=true` 且 `rejected=true`。
+- `pending_count_after=0`。
+- `mailbox_mutation=none_rejected`。
+
 ## Approval / Trace CLI
 
 该 CLI 需要先启动 FastAPI server，用来验证跨请求 pending approval 状态和 trace 查询：
@@ -112,6 +162,7 @@ uv run uvicorn app.main:app --reload
 cd server
 uv run python agent_cli.py health
 uv run python agent_cli.py chat "请归档 email-001"
+uv run python agent_cli.py chat --readonly "请查看最近未读重要邮件"
 uv run python agent_cli.py pending
 uv run python agent_cli.py approve <pending_tool_call_id>
 uv run python agent_cli.py trace <trace_id>

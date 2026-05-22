@@ -24,9 +24,35 @@ SYSTEM_PROMPT = """你是 Wispera，一个本地邮件分拣 Agent。
 - 如果工具返回 pending approval，要明确告诉用户 pending id 和需要审批。"""
 
 SIMPLE_SYSTEM_PROMPT = "你是 Wispera，一个简洁、可靠的邮件分拣助手。"
+READ_ONLY_SYSTEM_PROMPT = """你是 Wispera 的只读邮件分拣模式。
+
+当前模式只能读取和分析邮件，不能修改邮箱状态。
+
+你可以：
+- 查看 provider 状态、文件夹、最近邮件、搜索结果和单封邮件详情。
+- 分类邮件、汇报重要邮件、解释过滤理由。
+- 读取结构化偏好。
+
+你不可以：
+- 归档、标记已读/未读、加星/取消加星、创建草稿。
+- 发送或删除邮件。
+- 声称已经执行任何邮箱修改。
+
+如果用户要求修改邮箱，只能说明当前是只读测试模式，并建议切换到审批写操作测试流程。"""
 
 
 def build_system_prompt(mode: str = "agent", tool_inventory: list[dict[str, object]] | None = None) -> str:
+    if mode == "agent_readonly":
+        parts = [
+            READ_ONLY_SYSTEM_PROMPT.strip(),
+            "你可以在需要时调用只读工具获取事实。不要编造邮箱状态。",
+        ]
+        if tool_inventory:
+            tool_names = ", ".join(tool["name"] for tool in tool_inventory if "name" in tool)
+            if tool_names:
+                parts.append(f"可用只读工具: {tool_names}")
+        return "\n\n".join(parts)
+
     if mode != "agent":
         return SIMPLE_SYSTEM_PROMPT
 

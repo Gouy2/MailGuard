@@ -54,6 +54,15 @@ def chat(request: ChatRequest):
     )
 
 
+@app.post("/chat/readonly", dependencies=[Protected])
+def chat_readonly(request: ChatRequest):
+    return StreamingResponse(
+        runtime.stream_chat(request.session_id, request.message, mode="agent_readonly"),
+        media_type="text/event-stream",
+        headers=STREAM_HEADERS,
+    )
+
+
 @app.post("/chat/simple", dependencies=[Protected])
 def chat_simple(request: ChatRequest):
     return StreamingResponse(

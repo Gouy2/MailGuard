@@ -17,6 +17,8 @@
 - Deterministic mock agent smoke：read tool、多步 tool-use、approve/reject。
 - Live LLM agent smoke：mock provider 上真实 LLM read tool-use。
 - 最小 HTTP approval / trace CLI：chat、pending、approve、reject、trace。
+- `agent_readonly` 模式、`/chat/readonly`、真实 QQ/Foxmail read-only agent smoke。
+- 真实 QQ/Foxmail pending write smoke：mark read、archive、star、create draft 只创建 pending 并 reject。
 
 暂缓：
 
@@ -28,42 +30,7 @@
 
 ## 下一优先级
 
-### 1. Real Mailbox Agent Read-Only
-
-目标：让 agent 在真实 QQ/Foxmail provider 上做只读分拣。
-
-范围：
-
-- recent/report/detail/search。
-- 不执行真实写操作。
-- 真实邮箱 tool result 控制长度。
-- trace 不落正文。
-
-验收：
-
-- 能解释最近未读邮件里哪些需要处理。
-- 能根据用户问题查找和总结具体邮件。
-- 不把 IMAP 暴露数量误解释成邮箱总历史数量。
-
-### 2. Real Mailbox Pending Write
-
-目标：在真实 QQ/Foxmail 上测试 agent 发起写操作但停在 approval。
-
-范围：
-
-- mark read
-- archive
-- star
-- create draft
-
-原则：
-
-- 继续用专门测试邮件。
-- 不做 send / delete。
-- `create_draft` 只创建草稿，不发送。
-- 通过 `agent_cli.py pending/approve/reject/trace` 查询和确认。
-
-### 3. Classification Quality Loop
+### 1. Classification Quality Loop
 
 目标：利用真实标签文件改进分类策略。
 
@@ -80,7 +47,7 @@
 - important precision
 - noise filtering precision
 
-### 4. Minimal UI
+### 2. Minimal UI
 
 目标：在 CLI 闭环稳定后，做最小可用的 agent approval UI。
 

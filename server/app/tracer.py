@@ -47,7 +47,7 @@ class TraceLogger:
                 payload={
                     "session_id": session_id,
                     "mode": mode,
-                    "user_message": redact_for_trace({"content": user_message})["content"],
+                    "user_message": user_message,
                 },
             )
         )
@@ -82,10 +82,10 @@ class TraceLogger:
             "turn_end",
             {
                 "status": status,
-                    "assistant_text": redact_for_trace({"content": assistant_text})["content"],
-                    "tool_calls": tool_calls,
-                },
-            )
+                "assistant_text": assistant_text,
+                "tool_calls": tool_calls,
+            },
+        )
 
     def read_trace(self, trace_id: str) -> list[dict[str, Any]]:
         path = self.trace_dir / f"{trace_id}.jsonl"

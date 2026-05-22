@@ -24,6 +24,44 @@ Agent 模式下，如果一个 tool call 返回 `requires_approval`，`AgentRunt
 
 这样避免模型在危险动作尚未审批时继续规划或误称动作已经完成。
 
+## Pending Write Smoke
+
+真实邮箱 pending write smoke 使用 `uv run python agent_smoke.py --real-pending-write`。
+
+它的目标不是执行写操作，而是证明真实 QQ/Foxmail provider 下 dangerous 工具会停在 approval 边界。
+
+流程：
+
+- 用 `email_provider_status` 确认 provider。
+- 用 `email_list_recent` 只读选择一封邮件 id。
+- 用脚本化 tool call 依次触发 `email_mark_read`、`email_archive`、`email_star`、`email_create_draft`。
+- 每个工具调用都必须返回 `status=pending`。
+- 每个 pending 都立即 `reject`。
+- 最后确认 pending 列表为空。
+
+该 smoke 不调用 `approve_tool()`，因此不会执行 IMAP `STORE`、`COPY`、`EXPUNGE` 或 `APPEND`。
+
+## Agent Read-Only Mode
+
+真实邮箱只读测试使用 `agent_readonly` 模式，而不是只靠 prompt 约束。
+
+入口：
+
+- `POST /chat/readonly`
+- `uv run python agent_cli.py chat --readonly "..."`
+- `uv run python agent_smoke.py --real-readonly`
+
+只读模式下模型只会看到邮箱读取工具和 `email_get_preferences`。邮箱 mutation 工具、偏好写工具和 notification 写工具不会出现在 OpenAI tools 列表里。
+
+如果模型异常返回了非只读工具调用，`AgentRuntime` 会：
+
+- 记录 `tool_blocked`
+- 返回 `status=blocked`
+- 不创建 pending approval
+- 不执行任何 provider mutation
+
+真实只读 smoke 输出不包含 assistant preview，只记录 provider、trace id、tool names、turn status 和是否使用写工具。
+
 ## Approval / Trace CLI
 
 `server/agent_cli.py` 是当前最小人机审批闭环，不替代未来 UI。
@@ -43,7 +81,7 @@ Agent 模式下，如果一个 tool call 返回 `requires_approval`，`AgentRunt
 
 输出策略：
 
-- `chat` 打印 turn status、trace id、tool call 数和最终 assistant 文本。
+- `chat` 打印 turn status、trace id、tool call 数和最终 assistant 文本；真实邮箱手动记录时不要保存完整回答。
 - `pending` 打印 pending id、tool name、session、trace 和脱敏参数摘要。
 - `trace` 只打印事件名、tool name、pending id、审批决策和 turn 状态，不展开完整 payload。
 

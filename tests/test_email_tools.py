@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from server.agent_cli import AgentHttpClient, run_cli as run_agent_cli
 from server.email_cli import run_cli
-from server.agent_smoke import run_agent_smoke
+from server.agent_smoke import run_agent_smoke, run_real_pending_write_smoke
 from server.app.agent import _state_db_path
 from server.app.agent import AgentRuntime
 from server.app.auth import configured_auth_token
@@ -25,6 +25,7 @@ from server.app.llm_email_classifier import _normalize_decision, _parse_json_obj
 from server.app.memory import MemoryStore
 from server.app.provider_factory import create_email_provider
 from server.app.qq_imap_provider import QQImapConfig, QQImapProvider
+from server.app.redaction import redact_for_trace
 from server.app.real_email_eval import evaluate_real_labels, load_real_labels, save_real_label
 from server.app.sqlite_state import SQLiteStateStore
 
@@ -132,6 +133,21 @@ class LLMEmailClassifierParsingTests(unittest.TestCase):
                 },
                 "{}",
             )
+
+
+class RedactionTests(unittest.TestCase):
+    def test_trace_redacts_user_and_assistant_text(self) -> None:
+        redacted = redact_for_trace(
+            {
+                "user_message": "show my real mailbox",
+                "assistant_text": "real mailbox summary",
+                "tool": "email_report_important",
+            }
+        )
+
+        self.assertTrue(redacted["user_message"]["redacted"])
+        self.assertTrue(redacted["assistant_text"]["redacted"])
+        self.assertEqual("email_report_important", redacted["tool"])
 
 
 class EmailToolRuntimeTests(unittest.TestCase):
@@ -285,6 +301,55 @@ class EmailToolRuntimeTests(unittest.TestCase):
         self.assertIn("inbox", detail["result"]["email"]["labels"])
         self.assertNotIn("archived", detail["result"]["email"]["labels"])
 
+    def test_readonly_agent_exposes_only_read_tools(self) -> None:
+        tools = self.runtime.agent_tools(mode="agent_readonly")
+        names = {tool["function"]["name"] for tool in tools}
+
+        self.assertIn("email_report_important", names)
+        self.assertIn("email_get_detail", names)
+        self.assertIn("email_get_preferences", names)
+        self.assertNotIn("email_archive", names)
+        self.assertNotIn("email_mark_read", names)
+        self.assertNotIn("email_star", names)
+        self.assertNotIn("email_create_draft", names)
+        self.assertNotIn("email_add_preference", names)
+
+    def test_readonly_agent_blocks_unexpected_write_tool_call(self) -> None:
+        fake_client = FakeOpenAIClient(
+            [
+                FakeChatResponse(
+                    FakeChatMessage(
+                        tool_calls=[
+                            FakeToolCall(
+                                "call-archive",
+                                "email_archive",
+                                '{"email_id":"email-001"}',
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+
+        with patch("server.app.agent._openai_client", return_value=fake_client):
+            events = list(
+                self.runtime.stream_chat(
+                    "readonly-agent",
+                    "请归档 email-001",
+                    mode="agent_readonly",
+                )
+            )
+
+        self.assertEqual(1, len(fake_client.calls))
+        offered_tools = {tool["function"]["name"] for tool in fake_client.calls[0]["tools"]}
+        self.assertNotIn("email_archive", offered_tools)
+        self.assertEqual([], self.runtime.pending_tools())
+        self.assertIn('"status": "blocked"', events[-1])
+
+        detail = self.runtime.execute_tool_for_test("email_get_detail", {"email_id": "email-001"})
+        self.assertIn("inbox", detail["result"]["email"]["labels"])
+        self.assertNotIn("archived", detail["result"]["email"]["labels"])
+
     def test_agent_smoke_covers_read_approval_and_reject_flows(self) -> None:
         with TemporaryDirectory() as temp_dir:
             result = run_agent_smoke(trace_dir=temp_dir)
@@ -301,6 +366,26 @@ class EmailToolRuntimeTests(unittest.TestCase):
         self.assertEqual("rejected", scenarios["star_reject"]["approval"])
         self.assertIn("tool_call", scenarios["read_report"]["trace_events"])
         self.assertIn("tool_pending", scenarios["archive_approve"]["trace_events"])
+
+    def test_real_pending_write_smoke_rejects_all_pending_calls(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            result = run_real_pending_write_smoke(trace_dir=temp_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("MockEmailProvider", result["provider"])
+        self.assertEqual("none_rejected", result["mailbox_mutation"])
+        self.assertEqual(0, result["pending_count_after"])
+        scenarios = {item["name"]: item for item in result["scenarios"]}
+        self.assertEqual(
+            {"mark_read_pending", "archive_pending", "star_pending", "draft_pending"},
+            set(scenarios),
+        )
+        for item in scenarios.values():
+            self.assertTrue(item["ok"])
+            self.assertEqual("pending", item["done_status"])
+            self.assertTrue(item["pending_created"])
+            self.assertTrue(item["rejected"])
+            self.assertIn("tool_pending", item["trace_events"])
 
     def test_preference_tools_are_structured_and_session_scoped(self) -> None:
         add = self.runtime.execute_tool_for_test(
@@ -1171,6 +1256,38 @@ class AgentCliTests(unittest.TestCase):
         self.assertIn("Trace ID: trace-1", output)
         self.assertIn("Tool calls: 1", output)
         self.assertIn("agent_cli.py pending", output)
+
+    def test_chat_readonly_uses_readonly_endpoint(self) -> None:
+        transport = FakeHttpTransport(
+            [
+                FakeHttpResponse(
+                    lines=[
+                        b'event: status\n',
+                        b'data: {"trace_id":"trace-ro","session_id":"cli-test","mode":"agent_readonly"}\n',
+                        b'\n',
+                        b'event: done\n',
+                        b'data: {"trace_id":"trace-ro","text":"read only","tool_calls":1,"status":"ok"}\n',
+                        b'\n',
+                    ]
+                )
+            ]
+        )
+        client = AgentHttpClient(base_url="http://server.test", session_id="cli-test", transport=transport)
+        stdout = StringIO()
+
+        exit_code = run_agent_cli(
+            ["chat", "--readonly", "请检查未读重要邮件"],
+            client=client,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+
+        self.assertEqual(0, exit_code)
+        request, _timeout = transport.requests[0]
+        self.assertEqual("http://server.test/chat/readonly", request.full_url)
+        output = stdout.getvalue()
+        self.assertIn("Mode: readonly", output)
+        self.assertIn("Trace ID: trace-ro", output)
 
     def test_pending_approve_reject_and_trace_use_expected_endpoints(self) -> None:
         transport = FakeHttpTransport(

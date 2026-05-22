@@ -57,9 +57,10 @@ class AgentHttpClient:
     def health(self) -> dict[str, Any]:
         return self._get_json("/health")
 
-    def chat(self, message: str) -> dict[str, Any]:
+    def chat(self, message: str, *, readonly: bool = False) -> dict[str, Any]:
         payload = {"session_id": self.session_id, "message": message}
-        request = self._request("/chat", method="POST", payload=payload)
+        path = "/chat/readonly" if readonly else "/chat"
+        request = self._request(path, method="POST", payload=payload)
         events: list[dict[str, Any]] = []
         try:
             with self.transport.open(request, timeout=self.timeout) as response:
@@ -73,6 +74,7 @@ class AgentHttpClient:
         return {
             "ok": not error,
             "status": status,
+            "readonly": readonly,
             "trace_id": done.get("trace_id") or error.get("trace_id") or _first_trace_id(events),
             "text": done.get("text", ""),
             "tool_calls": done.get("tool_calls", 0),
@@ -156,6 +158,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     chat = subparsers.add_parser("chat", help="Send one agent chat turn.")
     chat.add_argument("message", nargs="+")
+    chat.add_argument(
+        "--readonly",
+        action="store_true",
+        help="Use /chat/readonly so the model only sees read-only email tools.",
+    )
     chat.set_defaults(func=_cmd_chat, display_command="chat")
 
     pending = subparsers.add_parser("pending", help="List pending dangerous tool calls.")
@@ -243,7 +250,7 @@ def _cmd_health(args: argparse.Namespace, client: AgentHttpClient) -> dict[str, 
 
 
 def _cmd_chat(args: argparse.Namespace, client: AgentHttpClient) -> dict[str, Any]:
-    return client.chat(" ".join(args.message))
+    return client.chat(" ".join(args.message), readonly=args.readonly)
 
 
 def _cmd_pending(args: argparse.Namespace, client: AgentHttpClient) -> dict[str, Any]:
@@ -296,6 +303,8 @@ def _print_health(result: dict[str, Any], out: TextIO) -> None:
 
 def _print_chat(result: dict[str, Any], out: TextIO) -> None:
     print(f"Status: {result.get('status', '')}", file=out)
+    if result.get("readonly"):
+        print("Mode: readonly", file=out)
     print(f"Trace ID: {result.get('trace_id', '')}", file=out)
     print(f"Tool calls: {result.get('tool_calls', 0)}", file=out)
     text = str(result.get("text", "")).strip()
