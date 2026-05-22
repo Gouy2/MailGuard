@@ -11,13 +11,13 @@ python3 -m unittest tests.test_email_tools
 当前结果：
 
 ```text
-57 tests OK
+62 tests OK
 ```
 
 编译检查：
 
 ```bash
-python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py client/aemeath/*.py tests/test_email_tools.py
+python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py client/aemeath/*.py tests/test_email_tools.py
 ```
 
 当前覆盖重点：
@@ -25,6 +25,8 @@ python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.
 - 规则分类器和 mock report。
 - dangerous approval、approve 后 mutation、reject 后不 mutation。
 - Agent tool-use 遇到 pending approval 后立即停止。
+- deterministic agent smoke：mock read tool、多步 tool-use、approve/reject。
+- HTTP approval / trace CLI：SSE 解析、pending/approve/reject/trace、auth header。
 - 结构化偏好和分类影响。
 - scheduler 扫描、去重、notification、digest。
 - SQLite persistence 和跨 store 去重。
@@ -61,6 +63,67 @@ uv run python evaluate_email.py --classifier rule --limit 36
 - `mismatches`: []
 
 这个结果只说明规则 baseline 与当前 mock 标签一致，不代表真实邮箱质量。
+
+## Agent Tool-Use Smoke
+
+该 smoke 强制使用 mock provider，不读取真实 QQ/Foxmail 邮箱。
+
+Deterministic 模式不需要 API key。它用脚本化 fake model response 走真实 `AgentRuntime.stream_chat()` 路径。
+
+```bash
+python3 server/agent_smoke.py
+```
+
+覆盖场景：
+
+- `read_report`：agent 调用 `email_report_important`，拿到 tool result 后再生成最终回答。
+- `archive_approve`：agent 发起 `email_archive`，runtime 停在 pending；批准后才修改 mock 邮件标签。
+- `star_reject`：agent 发起 `email_star`，runtime 停在 pending；拒绝后 mock 邮件不变。
+
+这个 smoke 证明 agent tool loop 和 approval 边界在 mock provider 上可回归。它不证明真实邮箱 agent 行为已经达标；真实邮箱仍要按 QQ/Foxmail 只读和 pending write 两步单独验证。
+
+Live LLM 模式会调用 `.env` 中配置的模型和 API key，但仍强制 mock provider：
+
+```bash
+cd server
+uv run python agent_smoke.py --live
+```
+
+验收条件：
+
+- SSE turn 以 `status=ok` 结束。
+- trace 中至少出现一个邮件 read tool call。
+- 不产生真实邮箱 mutation。
+
+如果 live 模式失败，先看输出中的 `failure_reason` 和 `trace_id`；它通常说明模型没有调用工具、模型 API 不可用，或 tool-call schema 兼容性问题。
+
+## Approval / Trace CLI
+
+该 CLI 需要先启动 FastAPI server，用来验证跨请求 pending approval 状态和 trace 查询：
+
+```bash
+cd server
+uv run uvicorn app.main:app --reload
+```
+
+另一个 shell：
+
+```bash
+cd server
+uv run python agent_cli.py health
+uv run python agent_cli.py chat "请归档 email-001"
+uv run python agent_cli.py pending
+uv run python agent_cli.py approve <pending_tool_call_id>
+uv run python agent_cli.py trace <trace_id>
+```
+
+拒绝操作：
+
+```bash
+uv run python agent_cli.py reject <pending_tool_call_id>
+```
+
+`agent_cli.py` 会读取 `WISPERA_SERVER_URL` 和 `WISPERA_AUTH_TOKEN`。自动化测试使用 fake HTTP transport，不需要启动 server，也不会触碰真实邮箱。
 
 ## LLM Shadow Eval
 

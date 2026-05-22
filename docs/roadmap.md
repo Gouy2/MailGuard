@@ -14,6 +14,9 @@
 - opt-in SQLite persistence。
 - API token、开发工具默认关闭、trace/pending 脱敏。
 - Agent pending approval 停止边界。
+- Deterministic mock agent smoke：read tool、多步 tool-use、approve/reject。
+- Live LLM agent smoke：mock provider 上真实 LLM read tool-use。
+- 最小 HTTP approval / trace CLI：chat、pending、approve、reject、trace。
 
 暂缓：
 
@@ -25,36 +28,7 @@
 
 ## 下一优先级
 
-### 1. Agent Tool-Use Smoke
-
-目标：正式验证模型在 mock provider 上能正确使用邮件工具。
-
-范围：
-
-- 使用 mock provider，避免真实邮箱风险。
-- 让 agent 完成“查看未读重要邮件”“解释为什么重要”“创建草稿但等待审批”等任务。
-- 覆盖 read tool、多步 tool use、dangerous pending approval。
-- 确认 trace、SSE done status、pending 列表和 memory history 行为都清楚。
-
-验收：
-
-- 读操作能自动调用工具并给出可复核结果。
-- 写操作只生成 pending，不执行 mutation。
-- approve 后工具执行结果正确。
-- reject 后不修改 provider。
-
-### 2. Approval Interaction API / Minimal UI
-
-目标：给 agent tool-use 测试一个清晰的人机审批闭环。
-
-优先做：
-
-- pending 列表展示。
-- approve / reject 操作说明。
-- trace 查询和工具结果摘要。
-- 最小可用 demo，不做复杂客户端重构。
-
-### 3. Real Mailbox Agent Read-Only
+### 1. Real Mailbox Agent Read-Only
 
 目标：让 agent 在真实 QQ/Foxmail provider 上做只读分拣。
 
@@ -71,7 +45,7 @@
 - 能根据用户问题查找和总结具体邮件。
 - 不把 IMAP 暴露数量误解释成邮箱总历史数量。
 
-### 4. Real Mailbox Pending Write
+### 2. Real Mailbox Pending Write
 
 目标：在真实 QQ/Foxmail 上测试 agent 发起写操作但停在 approval。
 
@@ -87,8 +61,9 @@
 - 继续用专门测试邮件。
 - 不做 send / delete。
 - `create_draft` 只创建草稿，不发送。
+- 通过 `agent_cli.py pending/approve/reject/trace` 查询和确认。
 
-### 5. Classification Quality Loop
+### 3. Classification Quality Loop
 
 目标：利用真实标签文件改进分类策略。
 
@@ -104,6 +79,17 @@
 - important recall
 - important precision
 - noise filtering precision
+
+### 4. Minimal UI
+
+目标：在 CLI 闭环稳定后，做最小可用的 agent approval UI。
+
+优先做：
+
+- pending 列表。
+- approve / reject。
+- trace 摘要。
+- 当前 session 的 chat 状态。
 
 ## 不变量
 

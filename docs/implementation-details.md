@@ -24,6 +24,31 @@ Agent 模式下，如果一个 tool call 返回 `requires_approval`，`AgentRunt
 
 这样避免模型在危险动作尚未审批时继续规划或误称动作已经完成。
 
+## Approval / Trace CLI
+
+`server/agent_cli.py` 是当前最小人机审批闭环，不替代未来 UI。
+
+它通过 HTTP 调用：
+
+- `POST /chat`
+- `GET /tools/pending`
+- `POST /tools/approve`
+- `POST /tools/reject`
+- `GET /traces/{trace_id}`
+
+默认读取：
+
+- `WISPERA_SERVER_URL`
+- `WISPERA_AUTH_TOKEN`
+
+输出策略：
+
+- `chat` 打印 turn status、trace id、tool call 数和最终 assistant 文本。
+- `pending` 打印 pending id、tool name、session、trace 和脱敏参数摘要。
+- `trace` 只打印事件名、tool name、pending id、审批决策和 turn 状态，不展开完整 payload。
+
+它用于验证跨请求 API 状态；真实邮箱工具本身仍优先用 `email_cli.py` 做窄范围验证。
+
 ## QQ/Foxmail IMAP
 
 配置来自 `server/.env` 或进程环境：

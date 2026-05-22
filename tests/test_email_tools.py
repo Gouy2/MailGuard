@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 import os
+import json
 from io import StringIO
 from email.message import EmailMessage as OutboundEmailMessage
 from concurrent.futures import ThreadPoolExecutor
@@ -11,7 +12,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from server.agent_cli import AgentHttpClient, run_cli as run_agent_cli
 from server.email_cli import run_cli
+from server.agent_smoke import run_agent_smoke
 from server.app.agent import _state_db_path
 from server.app.agent import AgentRuntime
 from server.app.auth import configured_auth_token
@@ -133,7 +136,7 @@ class LLMEmailClassifierParsingTests(unittest.TestCase):
 
 class EmailToolRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._env_patcher = patch.dict(os.environ, {"WISPERA_STATE_DB": ""})
+        self._env_patcher = patch.dict(os.environ, {"WISPERA_EMAIL_PROVIDER": "mock", "WISPERA_STATE_DB": ""})
         self._env_patcher.start()
         self.runtime = AgentRuntime.create()
 
@@ -281,6 +284,23 @@ class EmailToolRuntimeTests(unittest.TestCase):
         detail = self.runtime.execute_tool_for_test("email_get_detail", {"email_id": "email-001"})
         self.assertIn("inbox", detail["result"]["email"]["labels"])
         self.assertNotIn("archived", detail["result"]["email"]["labels"])
+
+    def test_agent_smoke_covers_read_approval_and_reject_flows(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            result = run_agent_smoke(trace_dir=temp_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("mock", result["provider"])
+        self.assertEqual("mock_only", result["mailbox_mutation"])
+        scenarios = {item["name"]: item for item in result["scenarios"]}
+        self.assertEqual({"read_report", "archive_approve", "star_reject"}, set(scenarios))
+        self.assertEqual("ok", scenarios["read_report"]["done_status"])
+        self.assertEqual("pending", scenarios["archive_approve"]["done_status"])
+        self.assertEqual("approved", scenarios["archive_approve"]["approval"])
+        self.assertEqual("pending", scenarios["star_reject"]["done_status"])
+        self.assertEqual("rejected", scenarios["star_reject"]["approval"])
+        self.assertIn("tool_call", scenarios["read_report"]["trace_events"])
+        self.assertIn("tool_pending", scenarios["archive_approve"]["trace_events"])
 
     def test_preference_tools_are_structured_and_session_scoped(self) -> None:
         add = self.runtime.execute_tool_for_test(
@@ -1064,6 +1084,229 @@ class EmailCliTests(unittest.TestCase):
         self.assertIn("Sample count: 2", output)
         self.assertIn("important_recall: 1.0", output)
         self.assertIn("noise_filter_precision: 1.0", output)
+
+
+class FakeHttpResponse:
+    def __init__(self, body=None, lines=None):
+        self.body = body if body is not None else b""
+        self.lines = lines or []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        if isinstance(self.body, bytes):
+            return self.body
+        return json_dumps_bytes(self.body)
+
+    def __iter__(self):
+        return iter(self.lines)
+
+
+class FakeHttpTransport:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    def open(self, request, timeout):
+        self.requests.append((request, timeout))
+        if not self.responses:
+            raise AssertionError("unexpected extra HTTP request")
+        return self.responses.pop(0)
+
+
+def json_dumps_bytes(value):
+    return json.dumps(value, ensure_ascii=False).encode("utf-8")
+
+
+class AgentCliTests(unittest.TestCase):
+    def test_chat_parses_sse_and_prints_pending_hint(self) -> None:
+        transport = FakeHttpTransport(
+            [
+                FakeHttpResponse(
+                    lines=[
+                        b'event: status\n',
+                        b'data: {"trace_id":"trace-1","session_id":"cli-test","mode":"agent"}\n',
+                        b'\n',
+                        b'event: token\n',
+                        b'data: {"trace_id":"trace-1","delta":"needs approval","text":"needs approval"}\n',
+                        b'\n',
+                        b'event: done\n',
+                        b'data: {"trace_id":"trace-1","text":"needs approval","tool_calls":1,"status":"pending"}\n',
+                        b'\n',
+                    ]
+                )
+            ]
+        )
+        client = AgentHttpClient(
+            base_url="http://server.test",
+            session_id="cli-test",
+            transport=transport,
+            auth_token="token-1",
+        )
+        stdout = StringIO()
+
+        exit_code = run_agent_cli(
+            ["chat", "请", "归档", "email-001"],
+            client=client,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+
+        self.assertEqual(0, exit_code)
+        request, timeout = transport.requests[0]
+        self.assertEqual("http://server.test/chat", request.full_url)
+        self.assertEqual("POST", request.get_method())
+        self.assertEqual("Bearer token-1", request.get_header("Authorization"))
+        self.assertEqual(30.0, timeout)
+        self.assertEqual(
+            {"session_id": "cli-test", "message": "请 归档 email-001"},
+            json.loads(request.data.decode("utf-8")),
+        )
+        output = stdout.getvalue()
+        self.assertIn("Status: pending", output)
+        self.assertIn("Trace ID: trace-1", output)
+        self.assertIn("Tool calls: 1", output)
+        self.assertIn("agent_cli.py pending", output)
+
+    def test_pending_approve_reject_and_trace_use_expected_endpoints(self) -> None:
+        transport = FakeHttpTransport(
+            [
+                FakeHttpResponse(
+                    body={
+                        "status": "ok",
+                        "pending": [
+                            {
+                                "id": "pending-1",
+                                "tool_name": "email_archive",
+                                "arguments": {"email_id": "email-001"},
+                                "session_id": "cli-test",
+                                "trace_id": "trace-1",
+                                "reason": "dangerous tool requires explicit approval",
+                            }
+                        ],
+                    }
+                ),
+                FakeHttpResponse(
+                    body={
+                        "status": "ok",
+                        "ok": True,
+                        "tool": "email_archive",
+                        "result": {"action": "archive", "result": {"email_id": "email-001"}},
+                    }
+                ),
+                FakeHttpResponse(
+                    body={
+                        "status": "ok",
+                        "ok": True,
+                        "rejected": True,
+                        "pending_tool_call_id": "pending-2",
+                        "tool": "email_star",
+                    }
+                ),
+                FakeHttpResponse(
+                    body={
+                        "status": "ok",
+                        "trace_id": "trace-1",
+                        "events": [
+                            {
+                                "event": "turn_start",
+                                "payload": {"session_id": "cli-test", "mode": "agent"},
+                            },
+                            {
+                                "event": "tool_call",
+                                "payload": {"tool": "email_archive", "arguments": {"email_id": "email-001"}},
+                            },
+                            {
+                                "event": "tool_pending",
+                                "payload": {
+                                    "tool": "email_archive",
+                                    "pending_tool_call_id": "pending-1",
+                                },
+                            },
+                            {
+                                "event": "tool_approval",
+                                "payload": {"decision": "approved", "pending_tool_call_id": "pending-1"},
+                            },
+                            {
+                                "event": "turn_end",
+                                "payload": {"status": "ok", "tool_calls": 1},
+                            },
+                        ],
+                    }
+                ),
+            ]
+        )
+        client = AgentHttpClient(base_url="http://server.test", session_id="cli-test", transport=transport)
+
+        pending_out = StringIO()
+        self.assertEqual(
+            0,
+            run_agent_cli(["pending"], client=client, stdout=pending_out, stderr=StringIO()),
+        )
+        approve_out = StringIO()
+        self.assertEqual(
+            0,
+            run_agent_cli(["approve", "pending-1"], client=client, stdout=approve_out, stderr=StringIO()),
+        )
+        reject_out = StringIO()
+        self.assertEqual(
+            0,
+            run_agent_cli(["reject", "pending-2"], client=client, stdout=reject_out, stderr=StringIO()),
+        )
+        trace_out = StringIO()
+        self.assertEqual(
+            0,
+            run_agent_cli(["trace", "trace-1"], client=client, stdout=trace_out, stderr=StringIO()),
+        )
+
+        urls = [request.full_url for request, _timeout in transport.requests]
+        self.assertEqual(
+            [
+                "http://server.test/tools/pending",
+                "http://server.test/tools/approve",
+                "http://server.test/tools/reject",
+                "http://server.test/traces/trace-1",
+            ],
+            urls,
+        )
+        approve_payload = json.loads(transport.requests[1][0].data.decode("utf-8"))
+        reject_payload = json.loads(transport.requests[2][0].data.decode("utf-8"))
+        self.assertEqual({"pending_tool_call_id": "pending-1"}, approve_payload)
+        self.assertEqual({"pending_tool_call_id": "pending-2"}, reject_payload)
+
+        self.assertIn("Pending: 1", pending_out.getvalue())
+        self.assertIn("pending-1 [email_archive]", pending_out.getvalue())
+        self.assertIn("email-001", pending_out.getvalue())
+        self.assertIn("Approved: ok", approve_out.getvalue())
+        self.assertIn("Rejected: ok", reject_out.getvalue())
+        trace_text = trace_out.getvalue()
+        self.assertIn("Trace: trace-1", trace_text)
+        self.assertIn("tool=email_archive", trace_text)
+        self.assertIn("pending_id=pending-1", trace_text)
+        self.assertNotIn('"arguments"', trace_text)
+
+    def test_json_output_returns_raw_response(self) -> None:
+        transport = FakeHttpTransport([FakeHttpResponse(body={"service": "wispera-server", "status": "ok"})])
+        client = AgentHttpClient(base_url="http://server.test", transport=transport)
+        stdout = StringIO()
+
+        exit_code = run_agent_cli(["--json", "health"], client=client, stdout=stdout, stderr=StringIO())
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual({"service": "wispera-server", "status": "ok"}, json.loads(stdout.getvalue()))
+
+    def test_client_uses_auth_token_from_environment(self) -> None:
+        transport = FakeHttpTransport([FakeHttpResponse(body={"service": "wispera-server", "status": "ok"})])
+        with patch.dict(os.environ, {"WISPERA_AUTH_TOKEN": "env-token"}):
+            client = AgentHttpClient(base_url="http://server.test", transport=transport)
+            client.health()
+
+        request, _timeout = transport.requests[0]
+        self.assertEqual("Bearer env-token", request.get_header("Authorization"))
 
 
 class RealEmailEvalTests(unittest.TestCase):
