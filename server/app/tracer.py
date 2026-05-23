@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -11,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from .redaction import redact_for_trace
+
+
+TRACE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 def _now() -> str:
@@ -76,18 +80,22 @@ class TraceLogger:
         status: str,
         assistant_text: str = "",
         tool_calls: int = 0,
+        llm_calls: int = 0,
+        elapsed_ms: float | None = None,
     ) -> None:
-        self.log_event(
-            trace_id,
-            "turn_end",
-            {
-                "status": status,
-                "assistant_text": assistant_text,
-                "tool_calls": tool_calls,
-            },
-        )
+        payload: dict[str, Any] = {
+            "status": status,
+            "assistant_text": assistant_text,
+            "tool_calls": tool_calls,
+            "llm_calls": llm_calls,
+        }
+        if elapsed_ms is not None:
+            payload["elapsed_ms"] = elapsed_ms
+        self.log_event(trace_id, "turn_end", payload)
 
     def read_trace(self, trace_id: str) -> list[dict[str, Any]]:
+        if not _valid_trace_id(trace_id):
+            return []
         path = self.trace_dir / f"{trace_id}.jsonl"
         if not path.exists():
             return []
@@ -102,6 +110,12 @@ class TraceLogger:
         return events
 
     def _append(self, trace_id: str, record: dict[str, Any]) -> None:
+        if not _valid_trace_id(trace_id):
+            raise ValueError("invalid trace_id")
         path = self.trace_dir / f"{trace_id}.jsonl"
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _valid_trace_id(trace_id: str) -> bool:
+    return bool(TRACE_ID_PATTERN.fullmatch(str(trace_id)))

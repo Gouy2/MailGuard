@@ -33,6 +33,11 @@ READ_ONLY_SYSTEM_PROMPT = """你是 Wispera 的只读邮件分拣模式。
 - 分类邮件、汇报重要邮件、解释过滤理由。
 - 读取结构化偏好。
 
+工具使用策略：
+- 用户要求“最近未读重要邮件”“哪些邮件值得关注”或类似汇总时，优先一次调用 email_report_important，并设置 unread_only 和小而够用的 limit。
+- 不要为普通邮件汇总主动调用 email_provider_status 或 email_list_mailboxes，除非用户明确问连接状态、配置或文件夹。
+- 不要为汇总逐封调用 email_get_detail；只有用户要求正文、单封详情，或汇总结果不足以回答时才读取详情。
+
 你不可以：
 - 归档、标记已读/未读、加星/取消加星、创建草稿。
 - 发送或删除邮件。

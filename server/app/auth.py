@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import os
-from typing import Any
 
+try:
+    from fastapi import Request
+except ImportError:  # pragma: no cover - lets non-server unit tests import this module without FastAPI.
+    class Request:  # type: ignore[no-redef]
+        pass
 
 from .runtime_env import load_server_env
 
@@ -14,7 +18,7 @@ def configured_auth_token() -> str:
     return os.environ.get("WISPERA_AUTH_TOKEN", "").strip()
 
 
-async def require_api_token(request: Any) -> None:
+async def require_api_token(request: Request) -> None:
     token = configured_auth_token()
     if not token:
         return

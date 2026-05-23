@@ -1,74 +1,48 @@
 # 开发接手指南
 
-这份文档用于上下文恢复。细节以项目总览、架构和测试文档为准。
+这是一页上下文恢复文档。细节以 `docs/architecture.md`、`docs/testing-and-evaluation.md`、`docs/roadmap.md` 为准。
 
 ## 当前定位
 
-Wispera 是本地邮件分拣 Agent。当前方向是 server-first、Mac 本地测试、QQ/Foxmail IMAP 真实接入。旧 Windows 客户端暂不作为主要验证入口。
+Wispera 是本地邮件分拣 Agent。当前路线是 server-first、Mac 本地测试、QQ/Foxmail IMAP 真实接入。旧客户端暂不作为主验证入口。
 
 ## 当前状态
 
 已完成：
 
-- typed tool registry、schema validation、permission gate。
+- tool registry、schema validation、permission gate。
 - dangerous pending approval、approve/reject。
-- Agent 遇到 dangerous pending 后停止本轮 tool loop。
-- Mock provider。
+- Agent pending 后停止本轮 tool loop。
 - QQ/Foxmail IMAP provider。
 - recent/detail/search/status/mailboxes。
 - mark read、archive、star、create draft，全部 approval-gated。
-- 本地 `server/email_cli.py`。
-- 结构化偏好。
-- scheduler、notification outbox、digest、去重。
-- opt-in SQLite state。
+- `server/email_cli.py`、`server/agent_cli.py`、`server/agent_smoke.py`。
+- 结构化偏好、scheduler、notification outbox、digest、SQLite state。
 - mock eval、LLM shadow eval、real mailbox label/eval。
-- trace/pending redaction。
-- API token 和开发工具开关。
-- `server/agent_smoke.py`：mock provider 上验证 agent read tool、多步 tool-use、approve/reject。
-- `server/agent_cli.py`：通过 HTTP API 验证 chat、pending、approve、reject、trace 的最小闭环。
-- `agent_readonly` / `/chat/readonly`：真实 QQ/Foxmail agent 只读模式。
-- `agent_smoke.py --real-pending-write`：真实 QQ/Foxmail 写工具只创建 pending，并自动 reject。
+- trace/pending redaction、API token、开发工具开关。
+- `agent_readonly` / `/chat/readonly`。
 
-真实 QQ/Foxmail 手测结果：
+用户本地已验证：
 
-- recent/detail/search 通过。
-- mark read 通过。
-- archive 通过，归档文件夹已由用户创建并配置。
-- star 通过。
-- create draft 通过，且不会发送。
-- `status` 中 INBOX 数量小于网页邮箱总数是 QQ/Foxmail IMAP 暴露范围问题，暂不阻塞。
-- 真实 QQ/Foxmail agent read-only smoke 通过；只使用只读工具，没有写工具调用。
-- 真实 QQ/Foxmail pending write smoke 通过；mark read、archive、star、create draft 都停在 pending，并被 reject，未执行 mutation。
+- QQ/Foxmail recent/detail/search。
+- mark read、archive、star、create draft。
+- 归档文件夹已创建并配置。
+- `review` / `eval-real` 可用。
 
-未完成：
+自动/半自动已验证：
 
-- 真实标签样本积累和分类质量迭代。
-- send / delete。
+- `69 tests OK (1 skipped when FastAPI is unavailable in root python)`。
+- 编译检查通过。
+- deterministic mock agent smoke 通过。
+- live LLM mock-provider smoke 通过。
+- real read-only agent smoke 通过。
+- real pending-write smoke 通过，所有写工具只 pending/reject，不 mutation。
 
 ## 常用命令
 
-回归测试：
-
 ```bash
 python3 -m unittest tests.test_email_tools
-```
-
-编译检查：
-
-```bash
-python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py client/aemeath/*.py tests/test_email_tools.py
-```
-
-Mock eval：
-
-```bash
-cd server
-uv run python evaluate_email.py --classifier rule --limit 36
-```
-
-Agent smoke：
-
-```bash
+python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py client/aemeath/*.py tests/test_email_tools.py
 python3 server/agent_smoke.py
 cd server
 uv run python agent_smoke.py --live
@@ -76,28 +50,19 @@ uv run python agent_smoke.py --real-readonly
 uv run python agent_smoke.py --real-pending-write
 ```
 
-`--live` 会调用真实 LLM API，但仍强制 mock provider，不读取真实 QQ/Foxmail。`--real-readonly` 会读取真实 QQ/Foxmail，但只暴露只读工具，并且 smoke 输出不含 assistant 邮件摘要。`--real-pending-write` 读取真实 QQ/Foxmail，但只验证 pending/reject，不 approve。
-
-Approval / trace CLI：
+启动 server 和 HTTP CLI：
 
 ```bash
 cd server
 uv run uvicorn app.main:app --reload
-```
-
-另一个 shell：
-
-```bash
-cd server
 uv run python agent_cli.py health
-uv run python agent_cli.py chat "请归档 email-001"
-uv run python agent_cli.py chat --readonly "请查看最近未读重要邮件"
+uv run python agent_cli.py chat --readonly "请查看最近未读邮件，列出最值得我关注的几封，并说明原因。不要修改邮箱。"
 uv run python agent_cli.py pending
-uv run python agent_cli.py approve <pending_tool_call_id>
+uv run python agent_cli.py reject <pending_tool_call_id>
 uv run python agent_cli.py trace <trace_id>
 ```
 
-QQ/Foxmail 检查：
+QQ/Foxmail：
 
 ```bash
 cd server
@@ -106,66 +71,30 @@ uv run python email_cli.py mailboxes
 uv run python email_cli.py recent --limit 5 --unread
 uv run python email_cli.py detail imap-123 --max-body-chars 600
 uv run python email_cli.py report --limit 20 --unread
-```
-
-真实写操作测试：
-
-```bash
-cd server
-uv run python email_cli.py mark-read imap-123 --yes
-uv run python email_cli.py archive imap-123 --yes
-uv run python email_cli.py star imap-123 --yes
-uv run python email_cli.py draft imap-123 --body "这是一条 Wispera 测试草稿，请忽略。" --yes
-```
-
-真实人工评估：
-
-```bash
-cd server
 uv run python email_cli.py review --limit 10 --unread --label
-uv run python email_cli.py labels
 uv run python email_cli.py eval-real
-```
-
-## 配置提醒
-
-QQ/Foxmail：
-
-```bash
-WISPERA_EMAIL_PROVIDER=qq-imap
-WISPERA_QQ_EMAIL=...
-WISPERA_QQ_AUTH_CODE=...
-WISPERA_QQ_ARCHIVE_MAILBOX=...
-WISPERA_QQ_DRAFTS_MAILBOX=Drafts
-```
-
-SQLite：
-
-```bash
-WISPERA_STATE_DB=data/wispera_state.db
-```
-
-LLM shadow eval：
-
-```bash
-OPENAI_API_KEY=...
-OPENAI_MODEL=...
-OPENAI_BASE_URL=...
 ```
 
 ## 下一步
 
-按 [roadmap](./roadmap.md) 推进：
+按 `docs/roadmap.md`：
 
-1. 基于真实标签文件迭代分类质量。
-2. CLI 闭环稳定后再做最小 UI。
+1. 先补观测：chat 总耗时、LLM calls、tool calls、trace 分段耗时。
+2. 优化 read-only 查询性能：trace 汇总 tool 耗时，prompt 优先一次 `email_report_important`，必要时实现 header-only / summary-only 首筛。
+3. 再做自然对话验收：只读，再 pending/reject，再专门测试邮件 approve。
+4. 增加对话模式路由，避免普通闲聊误触发邮箱工具。
+5. 增加 `chat-loop`，方便多轮测试。
+6. 基于真实标签文件迭代分类质量。
+7. CLI 闭环稳定后做最小 approval UI。
+
+结构拆分暂不作为第一步。新增代码优先放入小模块，避免继续扩大 `agent.py`、`agent_cli.py`、`agent_smoke.py`、`email_tools.py`；等行为和测试数据稳定后，再做纯结构迁移。
 
 ## 不变量
 
 - 真实邮箱写操作必须 pending approval。
-- pending approval 不持久化。
 - send / delete 不做。
-- 不提交 `.env`、授权码、真实邮箱正文、真实标签文件或完整 trace。
-- `server/data/real_email_labels.json` 是本地文件，已加入 `.gitignore`。
+- pending approval 不持久化。
+- 不提交 `.env`、授权码、API key、真实邮箱正文、真实标签文件或完整 trace。
+- `server/data/real_email_labels.json` 是本地敏感文件。
 - Mock eval 永远使用 mock provider。
 - Scheduler 不修改邮箱，只写本地 notification。

@@ -10,7 +10,7 @@
 
 当前验证快照：
 
-- `python3 -m unittest tests.test_email_tools`：67 tests OK。
+- `python3 -m unittest tests.test_email_tools`：69 tests OK (1 skipped when FastAPI is unavailable in root python)。
 - `python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py client/aemeath/*.py tests/test_email_tools.py`：通过。
 - `python3 server/agent_smoke.py`：deterministic mock agent smoke 通过。
 - `cd server && uv run python agent_smoke.py --live`：live LLM mock-provider smoke 通过；模型调用了 `email_report_important`、`email_get_preferences` 和多次 `email_get_detail`，turn status 为 `ok`，未触碰真实邮箱。
@@ -18,4 +18,5 @@
 - `cd server && uv run python agent_smoke.py --real-pending-write`：真实 QQ/Foxmail pending write smoke 通过；mark read、archive、star、create draft 都只创建 pending 并立即 reject，`pending_count_after=0`，未执行 mutation。
 - `python3 -m unittest tests.test_email_tools.AgentCliTests`：HTTP approval / trace CLI fake transport 测试通过，覆盖 SSE chat、pending、approve、reject、trace、auth header。
 - QQ/Foxmail recent/detail/search、mark read、archive、star、create draft 已完成本地手测。
+- 自然对话人工验收尚未完成；按 `docs/testing-and-evaluation.md` 的只读、pending/reject、专门测试邮件 approve 顺序执行。
 - `server/data/real_email_labels.json` 是本地真实标签文件，已加入 `.gitignore`，不提交。

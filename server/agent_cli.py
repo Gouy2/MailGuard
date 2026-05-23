@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -62,12 +63,14 @@ class AgentHttpClient:
         path = "/chat/readonly" if readonly else "/chat"
         request = self._request(path, method="POST", payload=payload)
         events: list[dict[str, Any]] = []
+        started_at = time.perf_counter()
         try:
             with self.transport.open(request, timeout=self.timeout) as response:
                 events = parse_sse_response(response)
         except urllib.error.HTTPError as exc:
             raise RuntimeError(_read_http_error(exc)) from exc
 
+        client_elapsed_ms = _elapsed_ms(started_at)
         done = next((event["data"] for event in reversed(events) if event["event"] == "done"), {})
         error = next((event["data"] for event in reversed(events) if event["event"] == "error"), {})
         status = str(done.get("status") or ("error" if error else "ok"))
@@ -78,6 +81,9 @@ class AgentHttpClient:
             "trace_id": done.get("trace_id") or error.get("trace_id") or _first_trace_id(events),
             "text": done.get("text", ""),
             "tool_calls": done.get("tool_calls", 0),
+            "llm_calls": done.get("llm_calls", 0),
+            "elapsed_ms": done.get("elapsed_ms") or error.get("elapsed_ms") or client_elapsed_ms,
+            "client_elapsed_ms": client_elapsed_ms,
             "events": events,
             "error": error.get("message", ""),
         }
@@ -306,6 +312,11 @@ def _print_chat(result: dict[str, Any], out: TextIO) -> None:
     if result.get("readonly"):
         print("Mode: readonly", file=out)
     print(f"Trace ID: {result.get('trace_id', '')}", file=out)
+    print(f"Elapsed: {_format_ms(result.get('elapsed_ms'))}", file=out)
+    client_elapsed = result.get("client_elapsed_ms")
+    if client_elapsed is not None and client_elapsed != result.get("elapsed_ms"):
+        print(f"Client elapsed: {_format_ms(client_elapsed)}", file=out)
+    print(f"LLM calls: {result.get('llm_calls', 0)}", file=out)
     print(f"Tool calls: {result.get('tool_calls', 0)}", file=out)
     text = str(result.get("text", "")).strip()
     if text:
@@ -348,6 +359,25 @@ def _print_trace(result: dict[str, Any], out: TextIO) -> None:
     print(f"Trace: {trace_id}", file=out)
     print(f"Status: {result.get('status', '')}", file=out)
     print(f"Events: {len(events)}", file=out)
+    performance = _trace_performance(events)
+    if performance:
+        print(f"Turn elapsed: {_format_ms(performance.get('turn_elapsed_ms'))}", file=out)
+        print(
+            f"LLM elapsed: {_format_ms(performance.get('llm_elapsed_ms'))} "
+            f"across {performance.get('llm_calls', 0)} call(s)",
+            file=out,
+        )
+        print(
+            f"Tool elapsed: {_format_ms(performance.get('tool_elapsed_ms'))} "
+            f"across {performance.get('timed_tool_calls', 0)} timed call(s)",
+            file=out,
+        )
+        if performance.get("slowest_tool"):
+            print(
+                f"Slowest tool: {performance['slowest_tool']} "
+                f"{_format_ms(performance.get('slowest_tool_ms'))}",
+                file=out,
+            )
     for index, item in enumerate(events, start=1):
         event = item.get("event", "")
         payload = item.get("payload") or {}
@@ -361,6 +391,13 @@ def _print_trace(result: dict[str, Any], out: TextIO) -> None:
 def _trace_detail(event: str, payload: dict[str, Any]) -> str:
     if event == "turn_start":
         return f"session={payload.get('session_id', '')} mode={payload.get('mode', '')}"
+    if event == "llm_call_start":
+        return f"round={payload.get('round', '')} mode={payload.get('mode', '')} tools={payload.get('tools', 0)}"
+    if event == "llm_call_end":
+        return (
+            f"round={payload.get('round', '')} elapsed={_format_ms(payload.get('elapsed_ms'))} "
+            f"tool_calls={payload.get('tool_calls', 0)}"
+        )
     if event == "tool_call":
         return f"tool={payload.get('tool', '')}"
     if event == "tool_pending":
@@ -368,12 +405,76 @@ def _trace_detail(event: str, payload: dict[str, Any]) -> str:
     if event == "tool_result":
         result = payload.get("result") or {}
         status = "ok" if result.get("ok") else "pending" if result.get("requires_approval") else "error"
-        return f"tool={payload.get('tool', '')} status={status}"
+        return (
+            f"tool={payload.get('tool', '')} status={status} "
+            f"elapsed={_format_ms(result.get('latency_ms'))}"
+        )
     if event == "tool_approval":
         return f"decision={payload.get('decision', '')} pending_id={payload.get('pending_tool_call_id', '')}"
     if event == "turn_end":
-        return f"status={payload.get('status', '')} tool_calls={payload.get('tool_calls', 0)}"
+        return (
+            f"status={payload.get('status', '')} elapsed={_format_ms(payload.get('elapsed_ms'))} "
+            f"llm_calls={payload.get('llm_calls', 0)} tool_calls={payload.get('tool_calls', 0)}"
+        )
     return ""
+
+
+def _trace_performance(events: list[dict[str, Any]]) -> dict[str, Any]:
+    llm_elapsed_ms = 0.0
+    llm_calls = 0
+    tool_elapsed_ms = 0.0
+    timed_tools: list[tuple[str, float]] = []
+    turn_elapsed_ms: Any = None
+    for item in events:
+        event = item.get("event", "")
+        payload = item.get("payload") or {}
+        if event == "llm_call_end":
+            latency = _float_or_none(payload.get("elapsed_ms"))
+            if latency is not None:
+                llm_calls += 1
+                llm_elapsed_ms += latency
+        elif event == "tool_result":
+            result = payload.get("result") or {}
+            latency = _float_or_none(result.get("latency_ms"))
+            if latency is not None:
+                tool = str(payload.get("tool") or result.get("tool") or "")
+                timed_tools.append((tool, latency))
+                tool_elapsed_ms += latency
+        elif event == "turn_end":
+            turn_elapsed_ms = payload.get("elapsed_ms")
+    if not llm_calls and not timed_tools and turn_elapsed_ms is None:
+        return {}
+    slowest_tool = max(timed_tools, key=lambda item: item[1], default=("", 0.0))
+    return {
+        "turn_elapsed_ms": turn_elapsed_ms,
+        "llm_elapsed_ms": round(llm_elapsed_ms, 2),
+        "llm_calls": llm_calls,
+        "tool_elapsed_ms": round(tool_elapsed_ms, 2),
+        "timed_tool_calls": len(timed_tools),
+        "slowest_tool": slowest_tool[0],
+        "slowest_tool_ms": slowest_tool[1],
+    }
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return round((time.perf_counter() - started_at) * 1000, 2)
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_ms(value: Any) -> str:
+    try:
+        milliseconds = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if milliseconds >= 1000:
+        return f"{milliseconds / 1000:.2f}s"
+    return f"{milliseconds:.0f}ms"
 
 
 def _compact_json(value: Any, *, limit: int = 300) -> str:

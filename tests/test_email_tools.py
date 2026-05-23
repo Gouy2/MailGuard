@@ -17,7 +17,7 @@ from server.email_cli import run_cli
 from server.agent_smoke import run_agent_smoke, run_real_pending_write_smoke
 from server.app.agent import _state_db_path
 from server.app.agent import AgentRuntime
-from server.app.auth import configured_auth_token
+from server.app.auth import configured_auth_token, require_api_token
 from server.app.email_eval import evaluate_email_classifier
 from server.app.email_provider import MockEmailProvider
 from server.app.email_tools import classify_email
@@ -26,6 +26,7 @@ from server.app.memory import MemoryStore
 from server.app.provider_factory import create_email_provider
 from server.app.qq_imap_provider import QQImapConfig, QQImapProvider
 from server.app.redaction import redact_for_trace
+from server.app.tracer import TraceLogger
 from server.app.real_email_eval import evaluate_real_labels, load_real_labels, save_real_label
 from server.app.sqlite_state import SQLiteStateStore
 
@@ -148,6 +149,13 @@ class RedactionTests(unittest.TestCase):
         self.assertTrue(redacted["user_message"]["redacted"])
         self.assertTrue(redacted["assistant_text"]["redacted"])
         self.assertEqual("email_report_important", redacted["tool"])
+
+    def test_trace_logger_rejects_path_like_trace_ids(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            tracer = TraceLogger(trace_dir=Path(temp_dir))
+            trace_id = tracer.start_turn("trace-test", "agent", "hello")
+            self.assertTrue(tracer.read_trace(trace_id))
+            self.assertEqual([], tracer.read_trace("../outside"))
 
 
 class EmailToolRuntimeTests(unittest.TestCase):
@@ -1220,7 +1228,7 @@ class AgentCliTests(unittest.TestCase):
                         b'data: {"trace_id":"trace-1","delta":"needs approval","text":"needs approval"}\n',
                         b'\n',
                         b'event: done\n',
-                        b'data: {"trace_id":"trace-1","text":"needs approval","tool_calls":1,"status":"pending"}\n',
+                        b'data: {"trace_id":"trace-1","text":"needs approval","tool_calls":1,"llm_calls":1,"elapsed_ms":1234.5,"status":"pending"}\n',
                         b'\n',
                     ]
                 )
@@ -1254,6 +1262,8 @@ class AgentCliTests(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn("Status: pending", output)
         self.assertIn("Trace ID: trace-1", output)
+        self.assertIn("Elapsed: 1.23s", output)
+        self.assertIn("LLM calls: 1", output)
         self.assertIn("Tool calls: 1", output)
         self.assertIn("agent_cli.py pending", output)
 
@@ -1266,7 +1276,7 @@ class AgentCliTests(unittest.TestCase):
                         b'data: {"trace_id":"trace-ro","session_id":"cli-test","mode":"agent_readonly"}\n',
                         b'\n',
                         b'event: done\n',
-                        b'data: {"trace_id":"trace-ro","text":"read only","tool_calls":1,"status":"ok"}\n',
+                        b'data: {"trace_id":"trace-ro","text":"read only","tool_calls":1,"llm_calls":2,"elapsed_ms":900,"status":"ok"}\n',
                         b'\n',
                     ]
                 )
@@ -1288,6 +1298,8 @@ class AgentCliTests(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn("Mode: readonly", output)
         self.assertIn("Trace ID: trace-ro", output)
+        self.assertIn("Elapsed: 900ms", output)
+        self.assertIn("LLM calls: 2", output)
 
     def test_pending_approve_reject_and_trace_use_expected_endpoints(self) -> None:
         transport = FakeHttpTransport(
@@ -1338,6 +1350,17 @@ class AgentCliTests(unittest.TestCase):
                                 "payload": {"tool": "email_archive", "arguments": {"email_id": "email-001"}},
                             },
                             {
+                                "event": "llm_call_end",
+                                "payload": {"round": 1, "elapsed_ms": 1200, "tool_calls": 1},
+                            },
+                            {
+                                "event": "tool_result",
+                                "payload": {
+                                    "tool": "email_archive",
+                                    "result": {"ok": True, "latency_ms": 280, "tool": "email_archive"},
+                                },
+                            },
+                            {
                                 "event": "tool_pending",
                                 "payload": {
                                     "tool": "email_archive",
@@ -1350,7 +1373,7 @@ class AgentCliTests(unittest.TestCase):
                             },
                             {
                                 "event": "turn_end",
-                                "payload": {"status": "ok", "tool_calls": 1},
+                                "payload": {"status": "ok", "elapsed_ms": 1500, "llm_calls": 1, "tool_calls": 1},
                             },
                         ],
                     }
@@ -1402,7 +1425,13 @@ class AgentCliTests(unittest.TestCase):
         self.assertIn("Rejected: ok", reject_out.getvalue())
         trace_text = trace_out.getvalue()
         self.assertIn("Trace: trace-1", trace_text)
+        self.assertIn("LLM elapsed: 1.20s across 1 call(s)", trace_text)
+        self.assertIn("Tool elapsed: 280ms across 1 timed call(s)", trace_text)
+        self.assertIn("Slowest tool: email_archive 280ms", trace_text)
         self.assertIn("tool=email_archive", trace_text)
+        self.assertIn("status=ok elapsed=280ms", trace_text)
+        self.assertIn("elapsed=1.20s", trace_text)
+        self.assertIn("llm_calls=1", trace_text)
         self.assertIn("pending_id=pending-1", trace_text)
         self.assertNotIn('"arguments"', trace_text)
 
@@ -1600,6 +1629,25 @@ class AuthAndDevToolTests(unittest.TestCase):
     def test_configured_auth_token_reads_environment(self) -> None:
         with patch.dict(os.environ, {"WISPERA_AUTH_TOKEN": "test-token"}):
             self.assertEqual("test-token", configured_auth_token())
+
+    def test_auth_dependency_uses_fastapi_request_object(self) -> None:
+        try:
+            from fastapi import Depends, FastAPI
+            from fastapi.testclient import TestClient
+        except ImportError:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        app = FastAPI()
+
+        @app.post("/protected", dependencies=[Depends(require_api_token)])
+        def protected(payload: dict):
+            return {"ok": True, "payload": payload}
+
+        with patch.dict(os.environ, {"WISPERA_AUTH_TOKEN": ""}):
+            response = TestClient(app).post("/protected", json={"message": "hello"})
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual({"ok": True, "payload": {"message": "hello"}}, response.json())
 
     def test_dev_tools_can_be_enabled_and_reject_sensitive_paths(self) -> None:
         with patch.dict(os.environ, {"WISPERA_STATE_DB": "", "WISPERA_DEV_TOOLS": "1"}):

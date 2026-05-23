@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable
 
@@ -255,6 +256,7 @@ class AgentRuntime:
         return self.execute_tool(name, arguments, session_id=session_id, trace_id=trace_id)
 
     def stream_chat(self, session_id: str, message: str, mode: str = "agent"):
+        turn_started_at = time.perf_counter()
         session_id = session_id.strip() or "default"
         self.memory_store.append(session_id, "user", message)
         trace_id = self.tracer.start_turn(session_id, mode, message)
@@ -266,47 +268,73 @@ class AgentRuntime:
             for chunk in _chunks(assistant_text):
                 yield _sse_event("token", {"trace_id": trace_id, "delta": chunk, "text": assistant_text})
             self.memory_store.append(session_id, "assistant", assistant_text)
-            self.tracer.finish_turn(trace_id, status="fallback", assistant_text=assistant_text, tool_calls=0)
-            yield _sse_event("done", {"trace_id": trace_id, "text": assistant_text})
+            summary = _turn_summary(turn_started_at, tool_calls=0, llm_calls=0)
+            self.tracer.finish_turn(
+                trace_id,
+                status="fallback",
+                assistant_text=assistant_text,
+                tool_calls=0,
+                llm_calls=0,
+                elapsed_ms=summary["elapsed_ms"],
+            )
+            yield _sse_event("done", {"trace_id": trace_id, "text": assistant_text, **summary})
             return
 
         try:
             if mode == "simple":
-                assistant_text = self._run_simple(client, session_id)
+                assistant_text, llm_calls = self._run_simple(client, session_id, trace_id)
                 for chunk in _chunks(assistant_text):
                     yield _sse_event("token", {"trace_id": trace_id, "delta": chunk, "text": assistant_text})
                 self.memory_store.append(session_id, "assistant", assistant_text)
-                self.tracer.finish_turn(trace_id, status="ok", assistant_text=assistant_text, tool_calls=0)
-                yield _sse_event("done", {"trace_id": trace_id, "text": assistant_text})
+                summary = _turn_summary(turn_started_at, tool_calls=0, llm_calls=llm_calls)
+                self.tracer.finish_turn(
+                    trace_id,
+                    status="ok",
+                    assistant_text=assistant_text,
+                    tool_calls=0,
+                    llm_calls=llm_calls,
+                    elapsed_ms=summary["elapsed_ms"],
+                )
+                yield _sse_event("done", {"trace_id": trace_id, "text": assistant_text, **summary})
                 return
 
-            assistant_text, tool_calls, turn_status = self._run_agent(client, session_id, trace_id, mode=mode)
+            assistant_text, tool_calls, llm_calls, turn_status = self._run_agent(
+                client,
+                session_id,
+                trace_id,
+                mode=mode,
+            )
             for chunk in _chunks(assistant_text):
                 yield _sse_event("token", {"trace_id": trace_id, "delta": chunk, "text": assistant_text})
             self.memory_store.append(session_id, "assistant", assistant_text)
+            summary = _turn_summary(turn_started_at, tool_calls=tool_calls, llm_calls=llm_calls)
             if turn_status != "pending":
                 self.tracer.finish_turn(
                     trace_id,
                     status=turn_status,
                     assistant_text=assistant_text,
                     tool_calls=tool_calls,
+                    llm_calls=llm_calls,
+                    elapsed_ms=summary["elapsed_ms"],
                 )
             yield _sse_event(
                 "done",
                 {
                     "trace_id": trace_id,
                     "text": assistant_text,
-                    "tool_calls": tool_calls,
                     "status": turn_status,
+                    **summary,
                 },
             )
         except Exception as exc:  # pragma: no cover - defensive boundary
-            self.tracer.finish_turn(trace_id, status="error")
+            elapsed_ms = _elapsed_ms(turn_started_at)
+            self.tracer.finish_turn(trace_id, status="error", elapsed_ms=elapsed_ms)
             yield _sse_event(
                 "error",
                 {
                     "trace_id": trace_id,
                     "message": f"{type(exc).__name__}: {exc}",
+                    "elapsed_ms": elapsed_ms,
                 },
             )
 
@@ -320,18 +348,30 @@ class AgentRuntime:
             return f"我先记下了：{message}"
         return f"收到：{message}"
 
-    def _run_simple(self, client: "OpenAI", session_id: str) -> str:
+    def _run_simple(self, client: "OpenAI", session_id: str, trace_id: str) -> tuple[str, int]:
         messages = self._build_messages(session_id, mode="simple")
-        response = client.chat.completions.create(
-            model=_model_name(),
-            messages=messages,
+        started_at = time.perf_counter()
+        self.tracer.log_event(trace_id, "llm_call_start", {"round": 1, "mode": "simple", "tools": 0})
+        response = client.chat.completions.create(model=_model_name(), messages=messages)
+        self.tracer.log_event(
+            trace_id,
+            "llm_call_end",
+            {"round": 1, "mode": "simple", "elapsed_ms": _elapsed_ms(started_at), "tool_calls": 0},
         )
         message = response.choices[0].message
-        return (message.content or "").strip() or self._fallback_reply("simple", "")
+        return (message.content or "").strip() or self._fallback_reply("simple", ""), 1
 
-    def _run_agent(self, client: "OpenAI", session_id: str, trace_id: str, *, mode: str) -> tuple[str, int, str]:
+    def _run_agent(
+        self,
+        client: "OpenAI",
+        session_id: str,
+        trace_id: str,
+        *,
+        mode: str,
+    ) -> tuple[str, int, int, str]:
         messages = self._build_messages(session_id, mode=mode)
         tool_calls_total = 0
+        llm_calls_total = 0
         context = ToolContext(
             session_id=session_id,
             memory_store=self.memory_store,
@@ -339,15 +379,33 @@ class AgentRuntime:
             trace_id=trace_id,
         )
 
-        for _ in range(4):
+        for round_index in range(1, 5):
+            tools = self.agent_tools(mode=mode)
+            started_at = time.perf_counter()
+            self.tracer.log_event(
+                trace_id,
+                "llm_call_start",
+                {"round": round_index, "mode": mode, "tools": len(tools)},
+            )
             response = client.chat.completions.create(
                 model=_model_name(),
                 messages=messages,
-                tools=self.agent_tools(mode=mode),
+                tools=tools,
                 tool_choice="auto",
             )
+            llm_calls_total += 1
             message = response.choices[0].message
             tool_calls = message.tool_calls or []
+            self.tracer.log_event(
+                trace_id,
+                "llm_call_end",
+                {
+                    "round": round_index,
+                    "mode": mode,
+                    "elapsed_ms": _elapsed_ms(started_at),
+                    "tool_calls": len(tool_calls),
+                },
+            )
             if tool_calls:
                 assistant_message: dict[str, Any] = {
                     "role": "assistant",
@@ -382,6 +440,7 @@ class AgentRuntime:
                         return (
                             f"当前只读模式不允许调用 `{tool_call.function.name}`。我没有执行任何邮箱修改操作。",
                             tool_calls_total,
+                            llm_calls_total,
                             "blocked",
                         )
                     self.tracer.log_event(
@@ -416,7 +475,7 @@ class AgentRuntime:
                         return _pending_approval_text(
                             tool_call.function.name,
                             str(result.get("pending_tool_call_id", "")),
-                        ), tool_calls_total, "pending"
+                        ), tool_calls_total, llm_calls_total, "pending"
                     self.tracer.log_event(
                         trace_id,
                         "tool_result",
@@ -437,11 +496,11 @@ class AgentRuntime:
 
             assistant_text = (message.content or "").strip()
             if assistant_text:
-                return assistant_text, tool_calls_total, "ok"
+                return assistant_text, tool_calls_total, llm_calls_total, "ok"
 
-            return self._fallback_reply("agent", ""), tool_calls_total, "ok"
+            return self._fallback_reply("agent", ""), tool_calls_total, llm_calls_total, "ok"
 
-        return "我暂时没法把任务收束成一个结果。", tool_calls_total, "ok"
+        return "我暂时没法把任务收束成一个结果。", tool_calls_total, llm_calls_total, "ok"
 
 
 def _pending_approval_text(tool_name: str, pending_tool_call_id: str) -> str:
@@ -463,3 +522,15 @@ def _state_db_path(raw_path: str) -> str:
     elif relative.startswith(server_prefix):
         relative = relative[len(server_prefix) :]
     return str((SERVER_ROOT / relative).resolve())
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return round((time.perf_counter() - started_at) * 1000, 2)
+
+
+def _turn_summary(started_at: float, *, tool_calls: int, llm_calls: int) -> dict[str, Any]:
+    return {
+        "elapsed_ms": _elapsed_ms(started_at),
+        "tool_calls": tool_calls,
+        "llm_calls": llm_calls,
+    }
