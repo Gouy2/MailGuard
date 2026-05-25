@@ -2472,7 +2472,7 @@ wheels = [
 ]
 
 [[package]]
-name = "wispera-server"
+name = "mailguard-server"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

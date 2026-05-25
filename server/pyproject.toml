@@ -1,7 +1,7 @@
 [project]
-name = "wispera-server"
+name = "mailguard-server"
 version = "0.1.0"
-description = "Wispera desktop pet backend server"
+description = "MailGuard desktop pet backend server"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

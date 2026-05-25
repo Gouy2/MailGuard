@@ -1,4 +1,4 @@
-"""Small HTTP CLI for the Wispera agent approval and trace loop."""
+"""Small HTTP CLI for the MailGuard agent approval and trace loop."""
 
 from __future__ import annotations
 
@@ -49,9 +49,9 @@ class AgentHttpClient:
         transport: HttpTransport | None = None,
     ) -> None:
         load_server_env()
-        self.base_url = (base_url or os.environ.get("WISPERA_SERVER_URL") or DEFAULT_BASE_URL).rstrip("/")
+        self.base_url = (base_url or os.environ.get("MAILGUARD_SERVER_URL") or DEFAULT_BASE_URL).rstrip("/")
         self.session_id = session_id
-        self.auth_token = (auth_token if auth_token is not None else os.environ.get("WISPERA_AUTH_TOKEN", "")).strip()
+        self.auth_token = (auth_token if auth_token is not None else os.environ.get("MAILGUARD_AUTH_TOKEN", "")).strip()
         self.timeout = timeout
         self.transport = transport or UrlLibTransport()
 
@@ -143,12 +143,12 @@ class AgentHttpClient:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Exercise the Wispera HTTP approval and trace loop.",
+        description="Exercise the MailGuard HTTP approval and trace loop.",
     )
     parser.add_argument(
         "--base-url",
         default=None,
-        help=f"Server base URL. Defaults to WISPERA_SERVER_URL or {DEFAULT_BASE_URL}.",
+        help=f"Server base URL. Defaults to MAILGUARD_SERVER_URL or {DEFAULT_BASE_URL}.",
     )
     parser.add_argument(
         "--session-id",

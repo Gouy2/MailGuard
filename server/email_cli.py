@@ -1,4 +1,4 @@
-"""Small CLI for exercising Wispera email tools locally."""
+"""Small CLI for exercising MailGuard email tools locally."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ InputFunc = Callable[[str], str]
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Exercise Wispera email tools without pasting Python snippets.",
+        description="Exercise MailGuard email tools without pasting Python snippets.",
     )
     parser.add_argument(
         "--session-id",

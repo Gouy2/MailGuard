@@ -1,4 +1,4 @@
-"""Runtime environment helpers for the Wispera server."""
+"""Runtime environment helpers for the MailGuard server."""
 
 from __future__ import annotations
 

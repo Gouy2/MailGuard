@@ -149,7 +149,7 @@ uv run python email_cli.py detail imap-123 --max-body-chars 600
 
 `status` 数量口径：
 
-- `Messages` / `UID SEARCH ALL`：当前 `WISPERA_QQ_IMAP_MAILBOX` 下 IMAP 可见数量。
+- `Messages` / `UID SEARCH ALL`：当前 `MAILGUARD_QQ_IMAP_MAILBOX` 下 IMAP 可见数量。
 - `Selected mailbox EXISTS`：IMAP `SELECT` / `EXAMINE` 返回数量。
 - `Mailbox counts`：可见文件夹的 `STATUS (MESSAGES UNSEEN)`。
 
@@ -167,11 +167,11 @@ uv run python email_cli.py mark-read imap-123 --unread --yes
 uv run python email_cli.py archive imap-123
 uv run python email_cli.py archive imap-123 --yes
 uv run python email_cli.py star imap-123 --yes
-uv run python email_cli.py draft imap-123 --body "这是一条 Wispera 测试草稿，请忽略。"
-uv run python email_cli.py draft imap-123 --body "这是一条 Wispera 测试草稿，请忽略。" --yes
+uv run python email_cli.py draft imap-123 --body "这是一条 MailGuard 测试草稿，请忽略。"
+uv run python email_cli.py draft imap-123 --body "这是一条 MailGuard 测试草稿，请忽略。" --yes
 ```
 
-归档和草稿箱必须用 `email_cli.py mailboxes` 输出中的真实文件夹名。草稿只追加到 `WISPERA_QQ_DRAFTS_MAILBOX`，不会发送。
+归档和草稿箱必须用 `email_cli.py mailboxes` 输出中的真实文件夹名。草稿只追加到 `MAILGUARD_QQ_DRAFTS_MAILBOX`，不会发送。
 
 ## 分类评估
 

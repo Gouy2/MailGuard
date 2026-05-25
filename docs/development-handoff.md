@@ -4,7 +4,7 @@
 
 ## 当前定位
 
-Wispera 是本地邮件分拣 Agent。当前路线是 server-first、Mac 本地测试、QQ/Foxmail IMAP 真实接入。旧客户端暂不作为主验证入口。
+MailGuard 是本地邮件分拣 Agent。当前路线是 server-first、Mac 本地测试、QQ/Foxmail IMAP 真实接入。旧客户端暂不作为主验证入口。
 
 ## 当前状态
 

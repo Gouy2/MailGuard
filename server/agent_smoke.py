@@ -80,7 +80,7 @@ def run_agent_smoke(
     if trace_dir is not None:
         return _run_agent_smoke(runtime_factory=runtime_factory, trace_dir=Path(trace_dir))
 
-    with TemporaryDirectory(prefix="wispera-agent-smoke-") as temp_dir:
+    with TemporaryDirectory(prefix="mailguard-agent-smoke-") as temp_dir:
         return _run_agent_smoke(runtime_factory=runtime_factory, trace_dir=Path(temp_dir))
 
 
@@ -94,7 +94,7 @@ def run_live_agent_smoke(
     if trace_dir is not None:
         return _run_live_agent_smoke(prompt=prompt, runtime_factory=runtime_factory, trace_dir=Path(trace_dir))
 
-    with TemporaryDirectory(prefix="wispera-live-agent-smoke-") as temp_dir:
+    with TemporaryDirectory(prefix="mailguard-live-agent-smoke-") as temp_dir:
         return _run_live_agent_smoke(prompt=prompt, runtime_factory=runtime_factory, trace_dir=Path(temp_dir))
 
 
@@ -112,7 +112,7 @@ def run_real_readonly_agent_smoke(
             trace_dir=Path(trace_dir),
         )
 
-    with TemporaryDirectory(prefix="wispera-real-readonly-agent-smoke-") as temp_dir:
+    with TemporaryDirectory(prefix="mailguard-real-readonly-agent-smoke-") as temp_dir:
         return _run_real_readonly_agent_smoke(prompt=prompt, runtime_factory=runtime_factory, trace_dir=Path(temp_dir))
 
 
@@ -125,20 +125,20 @@ def run_real_pending_write_smoke(
     if trace_dir is not None:
         return _run_real_pending_write_smoke(runtime_factory=runtime_factory, trace_dir=Path(trace_dir))
 
-    with TemporaryDirectory(prefix="wispera-real-pending-write-smoke-") as temp_dir:
+    with TemporaryDirectory(prefix="mailguard-real-pending-write-smoke-") as temp_dir:
         return _run_real_pending_write_smoke(runtime_factory=runtime_factory, trace_dir=Path(temp_dir))
 
 
 def _run_live_agent_smoke(*, prompt: str, runtime_factory: RuntimeFactory, trace_dir: Path) -> dict[str, Any]:
     agent_module.load_server_env()
     previous_env = {
-        "WISPERA_EMAIL_PROVIDER": os.environ.get("WISPERA_EMAIL_PROVIDER"),
-        "WISPERA_STATE_DB": os.environ.get("WISPERA_STATE_DB"),
-        "WISPERA_TRACE_DIR": os.environ.get("WISPERA_TRACE_DIR"),
+        "MAILGUARD_EMAIL_PROVIDER": os.environ.get("MAILGUARD_EMAIL_PROVIDER"),
+        "MAILGUARD_STATE_DB": os.environ.get("MAILGUARD_STATE_DB"),
+        "MAILGUARD_TRACE_DIR": os.environ.get("MAILGUARD_TRACE_DIR"),
     }
-    os.environ["WISPERA_EMAIL_PROVIDER"] = "mock"
-    os.environ["WISPERA_STATE_DB"] = ""
-    os.environ["WISPERA_TRACE_DIR"] = str(trace_dir)
+    os.environ["MAILGUARD_EMAIL_PROVIDER"] = "mock"
+    os.environ["MAILGUARD_STATE_DB"] = ""
+    os.environ["MAILGUARD_TRACE_DIR"] = str(trace_dir)
 
     try:
         runtime = runtime_factory()
@@ -164,11 +164,11 @@ def _run_live_agent_smoke(*, prompt: str, runtime_factory: RuntimeFactory, trace
 def _run_real_readonly_agent_smoke(*, prompt: str, runtime_factory: RuntimeFactory, trace_dir: Path) -> dict[str, Any]:
     agent_module.load_server_env()
     previous_env = {
-        "WISPERA_STATE_DB": os.environ.get("WISPERA_STATE_DB"),
-        "WISPERA_TRACE_DIR": os.environ.get("WISPERA_TRACE_DIR"),
+        "MAILGUARD_STATE_DB": os.environ.get("MAILGUARD_STATE_DB"),
+        "MAILGUARD_TRACE_DIR": os.environ.get("MAILGUARD_TRACE_DIR"),
     }
-    os.environ["WISPERA_STATE_DB"] = ""
-    os.environ["WISPERA_TRACE_DIR"] = str(trace_dir)
+    os.environ["MAILGUARD_STATE_DB"] = ""
+    os.environ["MAILGUARD_TRACE_DIR"] = str(trace_dir)
 
     try:
         runtime = runtime_factory()
@@ -207,11 +207,11 @@ def _run_real_readonly_agent_smoke(*, prompt: str, runtime_factory: RuntimeFacto
 def _run_real_pending_write_smoke(*, runtime_factory: RuntimeFactory, trace_dir: Path) -> dict[str, Any]:
     agent_module.load_server_env()
     previous_env = {
-        "WISPERA_STATE_DB": os.environ.get("WISPERA_STATE_DB"),
-        "WISPERA_TRACE_DIR": os.environ.get("WISPERA_TRACE_DIR"),
+        "MAILGUARD_STATE_DB": os.environ.get("MAILGUARD_STATE_DB"),
+        "MAILGUARD_TRACE_DIR": os.environ.get("MAILGUARD_TRACE_DIR"),
     }
-    os.environ["WISPERA_STATE_DB"] = ""
-    os.environ["WISPERA_TRACE_DIR"] = str(trace_dir)
+    os.environ["MAILGUARD_STATE_DB"] = ""
+    os.environ["MAILGUARD_TRACE_DIR"] = str(trace_dir)
 
     try:
         runtime = runtime_factory()
@@ -253,7 +253,7 @@ def _run_real_pending_write_smoke(*, runtime_factory: RuntimeFactory, trace_dir:
                         tool_name="email_create_draft",
                         arguments={
                             "email_id": email_id,
-                            "body": "Wispera approval smoke draft. Do not send.",
+                            "body": "MailGuard approval smoke draft. Do not send.",
                         },
                         prompt="请为这封测试邮件创建一封草稿，等待我审批。",
                     ),
@@ -289,13 +289,13 @@ def _run_real_pending_write_smoke(*, runtime_factory: RuntimeFactory, trace_dir:
 def _run_agent_smoke(*, runtime_factory: RuntimeFactory, trace_dir: Path) -> dict[str, Any]:
     agent_module.load_server_env()
     previous_env = {
-        "WISPERA_EMAIL_PROVIDER": os.environ.get("WISPERA_EMAIL_PROVIDER"),
-        "WISPERA_STATE_DB": os.environ.get("WISPERA_STATE_DB"),
-        "WISPERA_TRACE_DIR": os.environ.get("WISPERA_TRACE_DIR"),
+        "MAILGUARD_EMAIL_PROVIDER": os.environ.get("MAILGUARD_EMAIL_PROVIDER"),
+        "MAILGUARD_STATE_DB": os.environ.get("MAILGUARD_STATE_DB"),
+        "MAILGUARD_TRACE_DIR": os.environ.get("MAILGUARD_TRACE_DIR"),
     }
-    os.environ["WISPERA_EMAIL_PROVIDER"] = "mock"
-    os.environ["WISPERA_STATE_DB"] = ""
-    os.environ["WISPERA_TRACE_DIR"] = str(trace_dir)
+    os.environ["MAILGUARD_EMAIL_PROVIDER"] = "mock"
+    os.environ["MAILGUARD_STATE_DB"] = ""
+    os.environ["MAILGUARD_TRACE_DIR"] = str(trace_dir)
 
     try:
         runtime = runtime_factory()

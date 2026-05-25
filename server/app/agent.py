@@ -81,7 +81,7 @@ class AgentRuntime:
     @classmethod
     def create(cls) -> "AgentRuntime":
         load_server_env()
-        state_db = os.environ.get("WISPERA_STATE_DB", "").strip()
+        state_db = os.environ.get("MAILGUARD_STATE_DB", "").strip()
         state_store = SQLiteStateStore(_state_db_path(state_db)) if state_db else None
         memory_store = MemoryStore(state_store=state_store)
         tool_registry = build_default_registry(memory_store)

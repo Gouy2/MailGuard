@@ -160,7 +160,7 @@ class RedactionTests(unittest.TestCase):
 
 class EmailToolRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._env_patcher = patch.dict(os.environ, {"WISPERA_EMAIL_PROVIDER": "mock", "WISPERA_STATE_DB": ""})
+        self._env_patcher = patch.dict(os.environ, {"MAILGUARD_EMAIL_PROVIDER": "mock", "MAILGUARD_STATE_DB": ""})
         self._env_patcher.start()
         self.runtime = AgentRuntime.create()
 
@@ -1436,18 +1436,18 @@ class AgentCliTests(unittest.TestCase):
         self.assertNotIn('"arguments"', trace_text)
 
     def test_json_output_returns_raw_response(self) -> None:
-        transport = FakeHttpTransport([FakeHttpResponse(body={"service": "wispera-server", "status": "ok"})])
+        transport = FakeHttpTransport([FakeHttpResponse(body={"service": "mailguard-server", "status": "ok"})])
         client = AgentHttpClient(base_url="http://server.test", transport=transport)
         stdout = StringIO()
 
         exit_code = run_agent_cli(["--json", "health"], client=client, stdout=stdout, stderr=StringIO())
 
         self.assertEqual(0, exit_code)
-        self.assertEqual({"service": "wispera-server", "status": "ok"}, json.loads(stdout.getvalue()))
+        self.assertEqual({"service": "mailguard-server", "status": "ok"}, json.loads(stdout.getvalue()))
 
     def test_client_uses_auth_token_from_environment(self) -> None:
-        transport = FakeHttpTransport([FakeHttpResponse(body={"service": "wispera-server", "status": "ok"})])
-        with patch.dict(os.environ, {"WISPERA_AUTH_TOKEN": "env-token"}):
+        transport = FakeHttpTransport([FakeHttpResponse(body={"service": "mailguard-server", "status": "ok"})])
+        with patch.dict(os.environ, {"MAILGUARD_AUTH_TOKEN": "env-token"}):
             client = AgentHttpClient(base_url="http://server.test", transport=transport)
             client.health()
 
@@ -1593,7 +1593,7 @@ class SQLiteRuntimePersistenceTests(unittest.TestCase):
     def test_runtime_factory_uses_configured_state_db(self) -> None:
         with TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "runtime-state.db"
-            with patch.dict(os.environ, {"WISPERA_STATE_DB": str(db_path)}):
+            with patch.dict(os.environ, {"MAILGUARD_STATE_DB": str(db_path)}):
                 first = AgentRuntime.create()
                 try:
                     add = first.execute_tool_for_test(
@@ -1621,13 +1621,13 @@ class SQLiteRuntimePersistenceTests(unittest.TestCase):
                     second.close()
 
     def test_state_db_path_accepts_historical_server_prefix(self) -> None:
-        resolved = Path(_state_db_path("server/data/wispera_state.db"))
-        self.assertEqual(Path("server/data/wispera_state.db").resolve(), resolved)
+        resolved = Path(_state_db_path("server/data/mailguard_state.db"))
+        self.assertEqual(Path("server/data/mailguard_state.db").resolve(), resolved)
 
 
 class AuthAndDevToolTests(unittest.TestCase):
     def test_configured_auth_token_reads_environment(self) -> None:
-        with patch.dict(os.environ, {"WISPERA_AUTH_TOKEN": "test-token"}):
+        with patch.dict(os.environ, {"MAILGUARD_AUTH_TOKEN": "test-token"}):
             self.assertEqual("test-token", configured_auth_token())
 
     def test_auth_dependency_uses_fastapi_request_object(self) -> None:
@@ -1643,14 +1643,14 @@ class AuthAndDevToolTests(unittest.TestCase):
         def protected(payload: dict):
             return {"ok": True, "payload": payload}
 
-        with patch.dict(os.environ, {"WISPERA_AUTH_TOKEN": ""}):
+        with patch.dict(os.environ, {"MAILGUARD_AUTH_TOKEN": ""}):
             response = TestClient(app).post("/protected", json={"message": "hello"})
 
         self.assertEqual(200, response.status_code)
         self.assertEqual({"ok": True, "payload": {"message": "hello"}}, response.json())
 
     def test_dev_tools_can_be_enabled_and_reject_sensitive_paths(self) -> None:
-        with patch.dict(os.environ, {"WISPERA_STATE_DB": "", "WISPERA_DEV_TOOLS": "1"}):
+        with patch.dict(os.environ, {"MAILGUARD_STATE_DB": "", "MAILGUARD_DEV_TOOLS": "1"}):
             runtime = AgentRuntime.create()
             try:
                 names = {tool["name"] for tool in runtime.tool_inventory()}
@@ -1668,11 +1668,11 @@ class AuthAndDevToolTests(unittest.TestCase):
                 runtime.close()
 
     def test_provider_factory_defaults_to_mock(self) -> None:
-        with patch.dict(os.environ, {"WISPERA_EMAIL_PROVIDER": ""}):
+        with patch.dict(os.environ, {"MAILGUARD_EMAIL_PROVIDER": ""}):
             self.assertIsInstance(create_email_provider(), MockEmailProvider)
 
     def test_provider_factory_rejects_unknown_provider(self) -> None:
-        with patch.dict(os.environ, {"WISPERA_EMAIL_PROVIDER": "imap"}):
+        with patch.dict(os.environ, {"MAILGUARD_EMAIL_PROVIDER": "imap"}):
             with self.assertRaises(RuntimeError):
                 create_email_provider()
 
@@ -1939,9 +1939,9 @@ class QQImapProviderTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "WISPERA_EMAIL_PROVIDER": "qq-imap",
-                "WISPERA_QQ_EMAIL": "user@foxmail.com",
-                "WISPERA_QQ_AUTH_CODE": "auth-code",
+                "MAILGUARD_EMAIL_PROVIDER": "qq-imap",
+                "MAILGUARD_QQ_EMAIL": "user@foxmail.com",
+                "MAILGUARD_QQ_AUTH_CODE": "auth-code",
             },
         ):
             self.assertIsInstance(create_email_provider(), QQImapProvider)

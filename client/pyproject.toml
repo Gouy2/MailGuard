@@ -1,7 +1,7 @@
 [project]
-name = "Wispera"
+name = "MailGuard"
 version = "0.1.0"
-description = "Wispera desktop pet client"
+description = "MailGuard desktop pet client"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

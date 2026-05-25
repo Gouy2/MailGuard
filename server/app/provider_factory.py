@@ -11,9 +11,9 @@ from .runtime_env import load_server_env
 
 def create_email_provider() -> EmailProvider:
     load_server_env()
-    provider = os.environ.get("WISPERA_EMAIL_PROVIDER", "mock").strip().lower()
+    provider = os.environ.get("MAILGUARD_EMAIL_PROVIDER", "mock").strip().lower()
     if provider in {"", "mock"}:
         return MockEmailProvider()
     if provider in {"qq", "qq-imap", "foxmail", "foxmail-imap"}:
         return QQImapProvider()
-    raise RuntimeError(f"unsupported WISPERA_EMAIL_PROVIDER: {provider}")
+    raise RuntimeError(f"unsupported MAILGUARD_EMAIL_PROVIDER: {provider}")

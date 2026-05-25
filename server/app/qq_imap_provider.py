@@ -54,22 +54,22 @@ class QQImapConfig:
     @classmethod
     def from_env(cls) -> "QQImapConfig":
         load_server_env()
-        email_address = os.environ.get("WISPERA_QQ_EMAIL", "").strip()
-        auth_code = os.environ.get("WISPERA_QQ_AUTH_CODE", "").strip()
+        email_address = os.environ.get("MAILGUARD_QQ_EMAIL", "").strip()
+        auth_code = os.environ.get("MAILGUARD_QQ_AUTH_CODE", "").strip()
         if not email_address:
-            raise RuntimeError("WISPERA_QQ_EMAIL is required for qq-imap provider")
+            raise RuntimeError("MAILGUARD_QQ_EMAIL is required for qq-imap provider")
         if not auth_code:
-            raise RuntimeError("WISPERA_QQ_AUTH_CODE is required for qq-imap provider")
-        port = int(os.environ.get("WISPERA_QQ_IMAP_PORT", str(DEFAULT_IMAP_PORT)).strip() or DEFAULT_IMAP_PORT)
+            raise RuntimeError("MAILGUARD_QQ_AUTH_CODE is required for qq-imap provider")
+        port = int(os.environ.get("MAILGUARD_QQ_IMAP_PORT", str(DEFAULT_IMAP_PORT)).strip() or DEFAULT_IMAP_PORT)
         return cls(
             email_address=email_address,
             auth_code=auth_code,
-            host=os.environ.get("WISPERA_QQ_IMAP_HOST", DEFAULT_IMAP_HOST).strip() or DEFAULT_IMAP_HOST,
+            host=os.environ.get("MAILGUARD_QQ_IMAP_HOST", DEFAULT_IMAP_HOST).strip() or DEFAULT_IMAP_HOST,
             port=port,
-            mailbox=os.environ.get("WISPERA_QQ_IMAP_MAILBOX", DEFAULT_MAILBOX).strip() or DEFAULT_MAILBOX,
-            archive_mailbox=os.environ.get("WISPERA_QQ_ARCHIVE_MAILBOX", DEFAULT_ARCHIVE_MAILBOX).strip()
+            mailbox=os.environ.get("MAILGUARD_QQ_IMAP_MAILBOX", DEFAULT_MAILBOX).strip() or DEFAULT_MAILBOX,
+            archive_mailbox=os.environ.get("MAILGUARD_QQ_ARCHIVE_MAILBOX", DEFAULT_ARCHIVE_MAILBOX).strip()
             or DEFAULT_ARCHIVE_MAILBOX,
-            drafts_mailbox=os.environ.get("WISPERA_QQ_DRAFTS_MAILBOX", DEFAULT_DRAFTS_MAILBOX).strip()
+            drafts_mailbox=os.environ.get("MAILGUARD_QQ_DRAFTS_MAILBOX", DEFAULT_DRAFTS_MAILBOX).strip()
             or DEFAULT_DRAFTS_MAILBOX,
         )
 
@@ -121,7 +121,7 @@ class QQImapProvider:
 
     def status(self) -> dict[str, Any]:
         with self._connection(readonly=True) as client:
-            selected_count = _select_count(getattr(client, "_wispera_selected_payload", []))
+            selected_count = _select_count(getattr(client, "_mailguard_selected_payload", []))
             all_ids = self._search_ids(client, "ALL")
             unseen_ids = self._search_ids(client, "UNSEEN")
             mailboxes = self._list_mailboxes_locked(client)
@@ -174,7 +174,7 @@ class QQImapProvider:
             if not self._mailbox_exists_locked(client, self.config.archive_mailbox):
                 raise RuntimeError(
                     f"archive mailbox not found: {self.config.archive_mailbox}. "
-                    "Run email_list_mailboxes and set WISPERA_QQ_ARCHIVE_MAILBOX to an existing mailbox."
+                    "Run email_list_mailboxes and set MAILGUARD_QQ_ARCHIVE_MAILBOX to an existing mailbox."
                 )
             copy_status, _ = client.uid("COPY", uid, self.config.archive_mailbox)
             _ensure_ok(copy_status, "copy message to archive mailbox")
@@ -220,13 +220,13 @@ class QQImapProvider:
         draft["To"] = ", ".join(recipients)
         draft["Subject"] = _reply_subject(source.subject)
         draft["Date"] = email.utils.format_datetime(datetime.now(UTC))
-        draft["Message-ID"] = f"<wispera-{uuid.uuid4().hex}@local>"
+        draft["Message-ID"] = f"<mailguard-{uuid.uuid4().hex}@local>"
         draft.set_content(body)
         with self._connection(readonly=False) as client:
             if not self._mailbox_exists_locked(client, self.config.drafts_mailbox):
                 raise RuntimeError(
                     f"drafts mailbox not found: {self.config.drafts_mailbox}. "
-                    "Run email_list_mailboxes and set WISPERA_QQ_DRAFTS_MAILBOX to an existing mailbox."
+                    "Run email_list_mailboxes and set MAILGUARD_QQ_DRAFTS_MAILBOX to an existing mailbox."
                 )
             status, _ = client.append(self.config.drafts_mailbox, r"(\Draft)", None, draft.as_bytes())
             _ensure_ok(status, "append draft message")
@@ -316,7 +316,7 @@ class _QQImapConnection:
         status, payload = self.client.select(self.config.mailbox, readonly=self.readonly)
         _ensure_ok(status, f"select mailbox {self.config.mailbox}")
         try:
-            setattr(self.client, "_wispera_selected_payload", payload)
+            setattr(self.client, "_mailguard_selected_payload", payload)
         except Exception:
             pass
         return self.client

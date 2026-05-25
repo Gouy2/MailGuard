@@ -22,10 +22,10 @@ def _now() -> str:
 
 
 def _default_trace_dir() -> Path:
-    base = os.environ.get("WISPERA_TRACE_DIR")
+    base = os.environ.get("MAILGUARD_TRACE_DIR")
     if base:
         return Path(base).expanduser().resolve()
-    return (Path(__file__).resolve().parents[2] / ".wispera" / "traces").resolve()
+    return (Path(__file__).resolve().parents[2] / ".mailguard" / "traces").resolve()
 
 
 @dataclass(slots=True)

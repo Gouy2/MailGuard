@@ -1,4 +1,4 @@
-"""Wispera Server - FastAPI entrypoint."""
+"""MailGuard Server - FastAPI entrypoint."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from .agent import AgentRuntime
 from .auth import require_api_token
 
-app = FastAPI(title="Wispera Server", version="0.1.0")
+app = FastAPI(title="MailGuard Server", version="0.1.0")
 STREAM_HEADERS = {
     "Cache-Control": "no-cache",
     "Connection": "keep-alive",
@@ -39,7 +39,7 @@ class ToolExecuteRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"service": "wispera-server", "status": "ok", **runtime.health()}
+    return {"service": "mailguard-server", "status": "ok", **runtime.health()}
 
 
 Protected = Depends(require_api_token)

@@ -1,4 +1,4 @@
-"""HTTP/SSE client for the Wispera server."""
+"""HTTP/SSE client for the MailGuard server."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ import urllib.request
 
 class ServerClient:
     def __init__(self, base_url: str | None = None, session_id: str = "default"):
-        self.base_url = (base_url or os.environ.get("WISPERA_SERVER_URL") or "http://127.0.0.1:8000").rstrip("/")
+        self.base_url = (base_url or os.environ.get("MAILGUARD_SERVER_URL") or "http://127.0.0.1:8000").rstrip("/")
         self.session_id = session_id
-        self.auth_token = os.environ.get("WISPERA_AUTH_TOKEN", "").strip()
+        self.auth_token = os.environ.get("MAILGUARD_AUTH_TOKEN", "").strip()
         self._cancelled = False
 
     def cancel(self):

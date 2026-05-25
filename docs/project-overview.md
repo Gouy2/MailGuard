@@ -1,6 +1,6 @@
 # 项目总览
 
-Wispera 是一个本地邮件分拣 Agent。当前目标是稳定真实 QQ/Foxmail 邮箱接入、agent tool-use、安全审批边界和分类评估闭环，而不是先做通用聊天或复杂 UI。
+MailGuard 是一个本地邮件分拣 Agent。当前目标是稳定真实 QQ/Foxmail 邮箱接入、agent tool-use、安全审批边界和分类评估闭环，而不是先做通用聊天或复杂 UI。
 
 ## 当前能力
 
@@ -67,21 +67,21 @@ Triage：
 QQ/Foxmail：
 
 ```bash
-WISPERA_EMAIL_PROVIDER=qq-imap
-WISPERA_QQ_EMAIL=...
-WISPERA_QQ_AUTH_CODE=...
-WISPERA_QQ_IMAP_HOST=imap.qq.com
-WISPERA_QQ_IMAP_PORT=993
-WISPERA_QQ_IMAP_MAILBOX=INBOX
-WISPERA_QQ_ARCHIVE_MAILBOX=...
-WISPERA_QQ_DRAFTS_MAILBOX=Drafts
+MAILGUARD_EMAIL_PROVIDER=qq-imap
+MAILGUARD_QQ_EMAIL=...
+MAILGUARD_QQ_AUTH_CODE=...
+MAILGUARD_QQ_IMAP_HOST=imap.qq.com
+MAILGUARD_QQ_IMAP_PORT=993
+MAILGUARD_QQ_IMAP_MAILBOX=INBOX
+MAILGUARD_QQ_ARCHIVE_MAILBOX=...
+MAILGUARD_QQ_DRAFTS_MAILBOX=Drafts
 ```
 
 可选：
 
 ```bash
-WISPERA_STATE_DB=data/wispera_state.db
-WISPERA_AUTH_TOKEN=...
+MAILGUARD_STATE_DB=data/mailguard_state.db
+MAILGUARD_AUTH_TOKEN=...
 OPENAI_API_KEY=...
 OPENAI_MODEL=...
 OPENAI_BASE_URL=...
@@ -91,4 +91,4 @@ OPENAI_BASE_URL=...
 
 - `server/.env`
 - `server/data/real_email_labels.json`
-- `.wispera/traces/`
+- `.mailguard/traces/`

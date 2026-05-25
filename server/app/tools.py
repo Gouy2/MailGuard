@@ -26,7 +26,7 @@ SENSITIVE_PATH_PARTS = {
     ".env",
     ".git",
     ".venv",
-    ".wispera",
+    ".mailguard",
     "__pycache__",
     "uv.lock",
 }
@@ -541,7 +541,7 @@ def build_default_registry(memory_store: MemoryStore) -> ToolRegistry:
             permission=ToolPermission.READ,
         )
     )
-    if env_flag("WISPERA_DEV_TOOLS"):
+    if env_flag("MAILGUARD_DEV_TOOLS"):
         registry.register(
             ToolSpec(
                 name="list_files",

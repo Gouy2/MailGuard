@@ -1,4 +1,4 @@
-"""Optional API authentication for the Wispera server."""
+"""Optional API authentication for the MailGuard server."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from .runtime_env import load_server_env
 
 def configured_auth_token() -> str:
     load_server_env()
-    return os.environ.get("WISPERA_AUTH_TOKEN", "").strip()
+    return os.environ.get("MAILGUARD_AUTH_TOKEN", "").strip()
 
 
 async def require_api_token(request: Request) -> None:

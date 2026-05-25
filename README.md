@@ -1,6 +1,6 @@
-# Wispera
+# MailGuard
 
-Wispera 是一个本地邮件分拣 Agent。当前开发重心在 server 端：通过工具读取 QQ/Foxmail 邮件、分类和过滤低价值消息、汇报重要邮件，并在任何真实邮箱写操作前要求用户审批。
+MailGuard 是一个本地邮件分拣 Agent。当前开发重心在 server 端：通过工具读取 QQ/Foxmail 邮件、分类和过滤低价值消息、汇报重要邮件，并在任何真实邮箱写操作前要求用户审批。
 
 旧桌宠客户端暂时不是主要验证入口；后续开发和测试默认在当前 Mac 本地完成。
 
@@ -59,7 +59,7 @@ uv run python email_cli.py eval-real
 ```bash
 uv run python email_cli.py mark-read imap-123 --yes
 uv run python email_cli.py archive imap-123 --yes
-uv run python email_cli.py draft imap-123 --body "这是一条 Wispera 测试草稿，请忽略。" --yes
+uv run python email_cli.py draft imap-123 --body "这是一条 MailGuard 测试草稿，请忽略。" --yes
 ```
 
 ## 文档
