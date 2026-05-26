@@ -17,7 +17,7 @@ SCAN_PREVIEW_LIMIT = 10
 
 
 class ArchiveProposalPolicy:
-    """Small precision-first gate for low-risk archive proposals."""
+    """Small precision-first gate for archive proposals and candidates."""
 
     def evaluate(
         self,
@@ -33,7 +33,7 @@ class ArchiveProposalPolicy:
 
         if category in PROTECTED_CATEGORIES or bool(decision.get("is_reportable")):
             return _policy_result(
-                "important",
+                "protected",
                 "protected category or reportable mail",
                 category=category,
                 importance=importance,
@@ -41,15 +41,22 @@ class ArchiveProposalPolicy:
 
         if _sender_has_important_preference(email, preferences) or important_preferences:
             return _policy_result(
-                "review",
+                "protected",
                 "sender or domain is protected by important preference",
                 category=category,
                 importance=importance,
             )
 
         if positive_signals:
+            if _is_archive_candidate(decision):
+                return _policy_result(
+                    "candidate",
+                    "low-value mail has positive signals, needs user feedback before proposal",
+                    category=category,
+                    importance=importance,
+                )
             return _policy_result(
-                "review",
+                "protected",
                 "positive importance signal blocks automatic archive proposal",
                 category=category,
                 importance=importance,
@@ -65,7 +72,7 @@ class ArchiveProposalPolicy:
 
         if bool(decision.get("is_ignored")):
             return _policy_result(
-                "review",
+                "candidate",
                 "ignored mail did not satisfy strict archive proposal policy",
                 category=category,
                 importance=importance,
@@ -96,8 +103,8 @@ def scan_action_proposals(
     proposals = []
     created_count = 0
     duplicate_count = 0
-    important_items = []
-    review_items = []
+    protected_items = []
+    candidate_items = []
     no_action_count = 0
 
     for email in emails:
@@ -127,10 +134,10 @@ def scan_action_proposals(
             continue
 
         item = _scan_item(email, decision, policy_decision)
-        if bucket == "important":
-            important_items.append(item)
-        elif bucket == "review":
-            review_items.append(item)
+        if bucket == "protected":
+            protected_items.append(item)
+        elif bucket == "candidate":
+            candidate_items.append(_candidate_item(item, email, decision, policy_decision))
         else:
             no_action_count += 1
 
@@ -141,12 +148,12 @@ def scan_action_proposals(
         "created_count": created_count,
         "duplicate_count": duplicate_count,
         "proposals": proposals,
-        "important_count": len(important_items),
-        "important_returned_count": min(len(important_items), SCAN_PREVIEW_LIMIT),
-        "important": important_items[:SCAN_PREVIEW_LIMIT],
-        "review_count": len(review_items),
-        "review_returned_count": min(len(review_items), SCAN_PREVIEW_LIMIT),
-        "review": review_items[:SCAN_PREVIEW_LIMIT],
+        "protected_count": len(protected_items),
+        "protected_returned_count": min(len(protected_items), SCAN_PREVIEW_LIMIT),
+        "protected": protected_items[:SCAN_PREVIEW_LIMIT],
+        "candidate_count": len(candidate_items),
+        "candidate_returned_count": min(len(candidate_items), SCAN_PREVIEW_LIMIT),
+        "candidates": candidate_items[:SCAN_PREVIEW_LIMIT],
         "no_action_count": no_action_count,
     }
 
@@ -374,9 +381,36 @@ def _scan_item(
     }
 
 
+def _candidate_item(
+    item: dict[str, Any],
+    email: EmailMessage,
+    decision: dict[str, Any],
+    policy_decision: dict[str, Any],
+) -> dict[str, Any]:
+    reasons = list(decision.get("reasons") or [])
+    return {
+        "candidate_id": f"candidate-{email.id}-archive",
+        "item_type": "candidate",
+        "action": ARCHIVE_ACTION,
+        "risk_level": "candidate",
+        "source": "policy_candidate",
+        "email_id": email.id,
+        "thread_id": email.thread_id,
+        "from_name": item.get("from_name", ""),
+        "from_email": item.get("from_email", ""),
+        "subject": item.get("subject", ""),
+        "category": item.get("category", ""),
+        "importance": item.get("importance", ""),
+        "suggested_action": item.get("suggested_action", ""),
+        "reason": "; ".join([policy_decision["reason"], *reasons]),
+        "policy_decision": item.get("policy_decision", ""),
+    }
+
+
 def _proposal_summary(proposal: dict[str, Any]) -> dict[str, Any]:
     return {
         "proposal_id": proposal.get("proposal_id", ""),
+        "item_type": "proposal",
         "action": proposal.get("action", ""),
         "status": proposal.get("status", ""),
         "risk_level": proposal.get("risk_level", ""),
@@ -393,6 +427,18 @@ def _proposal_summary(proposal: dict[str, Any]) -> dict[str, Any]:
         "executed_at": proposal.get("executed_at", ""),
         "error": proposal.get("error", ""),
     }
+
+
+def _is_archive_candidate(decision: dict[str, Any]) -> bool:
+    category = str(decision.get("category", "")).strip().lower()
+    importance = str(decision.get("importance", "")).strip().lower()
+    suggested_action = str(decision.get("suggested_action", "")).strip().lower()
+    return (
+        bool(decision.get("is_ignored"))
+        or category in ARCHIVE_CATEGORIES
+        or importance == "low"
+        or suggested_action == "ignore"
+    )
 
 
 def _policy_result(

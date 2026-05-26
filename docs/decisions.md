@@ -35,7 +35,7 @@ Policy + Memory + User Permission: authorize
   - `proposal`：系统建议归档，但仍需审批。
   - `auto_eligible`：未来用户明确授权后才可能自动执行。
 - 理由：当前只有 proposal/review，导致大量可归档邮件混在 review 中，难以学习和评估。
-- 后续：下一步先做 deterministic candidate expansion，再根据真实标签决定是否引入 LLM scorer。
+- 当前状态：deterministic candidate expansion 已落地；下一步根据真实标签决定是否引入 LLM scorer。
 
 ## 2026-05-26 - Memory 三层模型
 
@@ -55,11 +55,12 @@ Policy + Memory + User Permission: authorize
 
 ## 2026-05-26 - 先规则扩 candidate，再接 LLM scorer
 
-- 决策：下一步先做 deterministic candidate expansion，不先接 LLM suitability scorer。
+- 决策：先做 deterministic candidate expansion，不先接 LLM suitability scorer。
 - 理由：
   - 当前真实痛点是 proposal 召回太低，需要先把可归档灰区显性化。
   - 没有真实 candidate/proposal 标签，LLM prompt 很难个性化。
   - 过早接 LLM 会混淆问题来源：prompt、classifier、memory、policy、真实偏好都可能影响结果。
+- 当前状态：candidate expansion 已实现，`review-proposals --label` 可以同时标注 proposal 和 candidate。
 - 后续：收集真实标签后，再让 LLM 读取 observed/confirmed memory 辅助 suitability 判断。
 
 ## 2026-05-26 - 文档瘦身
@@ -67,4 +68,3 @@ Policy + Memory + User Permission: authorize
 - 决策：主文档收敛为 `project-state.md`、`decisions.md`、`architecture.md`、`testing-and-evaluation.md`、`test-logs/README.md`。
 - 理由：原有 `project-overview.md`、`current-development-plan.md`、`implementation-details.md` 职责重叠，继续并列会造成维护负担。
 - 后续：旧文档先归档，不直接删除；稳定后再决定是否彻底移除历史文档。
-

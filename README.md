@@ -1,31 +1,42 @@
 # MailGuard
 
-MailGuard 是一个本地邮件管理 Agent。当前开发重心在 server 端：通过工具读取 QQ/Foxmail 邮件、分类和过滤低价值消息、汇报重要邮件，并在任何真实邮箱写操作前要求用户审批。
+MailGuard 是一个本地优先的邮件管理 Agent 原型。它会读取和分类邮箱邮件，提出低风险清理建议，并把所有真实邮箱写操作放在用户审批和审计日志之后。
 
-旧桌宠客户端已移除；后续开发和测试默认在当前 Mac 本地完成。
 
-## 当前能力
+## 核心能力
 
-- FastAPI server、`AgentRuntime`、OpenAI tool calling。
-- typed tool registry、权限分级、pending approval、approve/reject。
-- QQ/Foxmail IMAP provider：recent/detail/search/status/mailboxes。
-- approval-gated mark read、archive、star、create draft。
-- `agent_readonly`、`/chat/readonly`、HTTP approval / trace CLI。
-- 结构化偏好、scheduler、notification、digest、SQLite state。
-- Action Proposal + Audit Log：低风险 archive proposal、审批/拒绝、approved execution。
-- mock eval、proposal policy eval、LLM shadow eval、real mailbox label/eval。
+- FastAPI + SSE Agent runtime，支持 OpenAI tool calling。
+- typed tool registry，包含 JSON Schema 参数校验和权限分级。
+- Human-in-the-loop 审批：真实邮箱写操作必须先进入 pending/proposal。
+- QQ/Foxmail IMAP provider：recent、detail、search、status、mailboxes，以及审批后的 mark-read、archive、star、draft。
+- 归档决策分层：`protected`、`candidate`、`proposal`，并为未来 `auto_eligible` 留出空间。
+- Action Proposal + Audit Log：记录 proposal 创建、审批、拒绝、执行和失败。
+- Mock eval、真实邮箱标签评估、proposal/candidate 标签评估、LLM shadow eval。
 
-暂不做：send、delete、其他邮箱 provider、后台常驻调度、复杂 UI。
+## 安全边界
 
-## 快速命令
+LLM 可以参与分类、归档适配度判断和解释，但不能授权真实邮箱写操作。写操作必须经过用户批准的 proposal，或未来明确配置的 automation policy，并且执行记录必须可追溯。
+
+```text
+scan/search -> classify/filter -> protected/candidate/proposal -> approval -> execute -> audit
+```
+
+## 快速开始
+
+在项目根目录运行回归测试：
 
 ```bash
-python3 -m unittest tests.test_email_tools
-python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/test_email_tools.py
+python3 -m unittest discover -s tests -p 'test*.py'
+python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py
+```
+
+运行 mock smoke test：
+
+```bash
 python3 server/agent_smoke.py
 ```
 
-启动 server：
+启动 API server：
 
 ```bash
 cd server
@@ -33,48 +44,16 @@ uv sync
 uv run uvicorn app.main:app --reload
 ```
 
-Agent CLI：
+只读审核 archive proposal/candidate：
 
 ```bash
 cd server
-uv run python agent_cli.py chat --readonly "请查看最近未读邮件，列出最值得我关注的几封，并说明原因。不要修改邮箱。"
-uv run python agent_cli.py pending
-uv run python agent_cli.py reject <pending_tool_call_id>
-uv run python agent_cli.py trace <trace_id>
-```
-
-QQ/Foxmail CLI：
-
-```bash
-cd server
-export MAILGUARD_STATE_DB=data/mailguard_state.db
-uv run python email_cli.py status
-uv run python email_cli.py mailboxes
-uv run python email_cli.py recent --limit 5 --unread
-uv run python email_cli.py report --limit 20 --unread
-uv run python email_cli.py propose --limit 20 --unread
-uv run python email_cli.py proposals
-uv run python email_cli.py approve-proposal <proposal_id>
-uv run python email_cli.py execute-approved
-uv run python email_cli.py audit
-uv run python email_cli.py eval-proposals --limit 36
 uv run python email_cli.py review-proposals --limit 20 --unread --label
 uv run python email_cli.py eval-real-proposals
-uv run python email_cli.py review --limit 10 --unread --label
-uv run python email_cli.py eval-real
-```
-
-写操作默认只预览 approval；加 `--yes` 才执行：
-
-```bash
-uv run python email_cli.py mark-read imap-123 --yes
-uv run python email_cli.py archive imap-123 --yes
-uv run python email_cli.py draft imap-123 --body "这是一条 MailGuard 测试草稿，请忽略。" --yes
 ```
 
 ## 文档
 
-- [文档总览](docs/README.md)
 - [项目状态](docs/project-state.md)
 - [架构决策](docs/decisions.md)
 - [系统架构](docs/architecture.md)

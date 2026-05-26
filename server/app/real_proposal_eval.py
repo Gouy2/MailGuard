@@ -38,16 +38,21 @@ def save_real_proposal_label(
     note: str = "",
 ) -> dict[str, Any]:
     proposal_id = str(proposal.get("proposal_id", "")).strip()
+    candidate_id = str(proposal.get("candidate_id", "")).strip()
+    item_id = proposal_id or candidate_id
     email_id = str(proposal.get("email_id", "")).strip()
-    if not proposal_id:
-        raise ValueError("proposal_id is required")
+    if not item_id:
+        raise ValueError("proposal_id or candidate_id is required")
     if not email_id:
         raise ValueError("email_id is required")
 
     normalized_label = normalize_proposal_label(label)
     data = load_real_proposal_labels(path)
     record = {
+        "item_id": item_id,
+        "item_type": str(proposal.get("item_type", "proposal" if proposal_id else "candidate")),
         "proposal_id": proposal_id,
+        "candidate_id": candidate_id,
         "email_id": email_id,
         "label": normalized_label,
         "note": note.strip(),
@@ -60,7 +65,7 @@ def save_real_proposal_label(
         "reason": str(proposal.get("reason", "")).strip(),
         "labeled_at": datetime.now().astimezone().isoformat(),
     }
-    data["labels"][proposal_id] = record
+    data["labels"][item_id] = record
     label_path = Path(path)
     label_path.parent.mkdir(parents=True, exist_ok=True)
     label_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
@@ -70,13 +75,17 @@ def save_real_proposal_label(
 def evaluate_real_proposal_labels(label_data: dict[str, Any]) -> dict[str, Any]:
     labels = label_data.get("labels", {})
     rows = []
-    for proposal_id, raw_record in sorted(labels.items()):
+    for item_id, raw_record in sorted(labels.items()):
         if not isinstance(raw_record, dict):
             continue
         label = normalize_proposal_label(str(raw_record.get("label", "")))
+        proposal_id = str(raw_record.get("proposal_id", "")) or item_id
         rows.append(
             {
+                "item_id": str(raw_record.get("item_id", "")) or item_id,
+                "item_type": str(raw_record.get("item_type", "")) or "proposal",
                 "proposal_id": proposal_id,
+                "candidate_id": str(raw_record.get("candidate_id", "")),
                 "email_id": str(raw_record.get("email_id", "")),
                 "label": label,
                 "action": str(raw_record.get("action", "")),

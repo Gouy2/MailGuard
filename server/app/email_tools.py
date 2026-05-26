@@ -847,7 +847,7 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
     registry.register(
         ToolSpec(
             name="email_scan_proposals",
-            description="Scan recent mail and create low-risk archive action proposals with audit events.",
+            description="Scan recent mail into protected/candidate/proposal buckets and create low-risk archive action proposals with audit events.",
             input_schema=_schema(
                 {
                     "limit": {

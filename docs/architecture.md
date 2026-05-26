@@ -105,35 +105,35 @@ QQ/Foxmail 写操作：
 
 ## Proposal 流程
 
-当前 M1 只支持 `archive` proposal。
+当前只支持 `archive` proposal。
 
 ```text
 email_scan_proposals
 -> classify_email
 -> ArchiveProposalPolicy
--> create ActionProposal
--> proposal_created audit event
+-> protected / candidate / proposal / no_action
+-> create ActionProposal for proposal only
+-> proposal_created audit event for proposal only
 -> user approve/reject
 -> execute approved archive
 -> execution audit event
 ```
 
-当前 policy 是 precision-first：
+当前 policy 是 precision-first，并显式区分学习层和执行层：
 
 - 只对 `newsletter` / `promotion` / `noise`、`low`、`ignore` 生成 proposal。
-- `security` / `finance` / `meeting` / `action_required` / `important` 进入保护路径。
+- `security` / `finance` / `meeting` / `action_required` / `important` 进入 `protected`。
 - important sender/domain preference 会阻止 proposal。
-- positive signals 会阻止 proposal。
-
-下一步将引入决策分层：
-
-```text
-protected / candidate / proposal / auto_eligible
-```
-
-- `protected`：不能被 LLM 直接推翻。
-- `candidate`：学习层，不执行。
+- 低价值邮件如果带有 positive signals，会进入 `candidate`，用于标注和学习，不执行。
+- 其他可忽略但未满足严格 proposal 条件的邮件也进入 `candidate`。
 - `proposal`：建议层，需要审批。
+- `no_action`：没有形成保护、候选或建议的普通邮件。
+
+目标分层：
+
+- `proposal`：建议层，需要审批。
+- `candidate`：学习层，不执行。
+- `protected`：不能被 LLM 直接推翻。
 - `auto_eligible`：未来用户明确授权后才可能自动执行。
 
 ## Memory 方向
@@ -211,4 +211,3 @@ Audit log 是产品级信任系统，记录 proposal 创建、审批、拒绝、
 - Trace id 只能是短字母数字、下划线或连字符，避免路径型输入。
 - Trace 和 pending 列表只保存脱敏摘要；user message、assistant text、body、content、token、secret 等字段整体脱敏。
 - Mock eval 永远使用 `MockEmailProvider`，不会跟随 active provider 读取真实邮箱。
-

@@ -5,8 +5,9 @@
 项目根目录：
 
 ```bash
+python3 -m unittest discover -s tests -p 'test*.py'
 python3 -m unittest tests.test_email_tools
-python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/test_email_tools.py
+python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py
 ```
 
 当前基线：
@@ -15,6 +16,18 @@ python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.
 86 tests OK (1 skipped when FastAPI is unavailable in root python)
 py_compile passed
 ```
+
+测试结构：
+
+- `tests/test_email_classification.py`：规则分类、LLM 输出解析、trace/redaction。
+- `tests/test_email_tool_runtime.py`：tool registry、approval、readonly、scheduler、proposal、eval。
+- `tests/test_email_cli.py`：email CLI 展示、approval preview、真实标签保存。
+- `tests/test_agent_cli.py`：HTTP/SSE agent CLI、pending、approve/reject、trace、auth header。
+- `tests/test_real_eval_helpers.py`：真实邮箱标签和 proposal/candidate 标签指标。
+- `tests/test_sqlite_persistence.py`：SQLite notification、preferences、scheduler、proposal/audit 持久化。
+- `tests/test_auth_provider_tools.py`：auth、dev tools、provider factory。
+- `tests/test_qq_imap_provider.py`：QQ/Foxmail IMAP provider。
+- `tests/fakes.py`：共享 fake runtime、HTTP transport、IMAP client。
 
 覆盖重点：
 
@@ -190,11 +203,12 @@ uv run python email_cli.py audit
 uv run python email_cli.py eval-proposals --limit 36
 ```
 
-M1 边界：
+当前边界：
 
 - 只生成 `archive` proposal。
 - 只对低风险 newsletter / promotion / noise 生成 proposal。
-- security / finance / meeting / action_required 不生成 archive proposal。
+- security / finance / meeting / action_required 进入 `protected`，不生成 archive proposal。
+- 灰区低价值邮件进入 `candidate`，只用于人工标注和后续学习，不执行真实邮箱动作。
 - important sender/domain 偏好会阻止 archive proposal。
 - `email_approve_proposal` 仍走 dangerous pending，Agent 不能自行批准 proposal。
 - execute-approved 只执行已 approved 的 proposal，并写入 audit event。
@@ -208,6 +222,13 @@ M1 边界：
 - `missed_safe_archive_count`: 6。
 
 这个指标用于证明当前策略是 precision-first：宁可漏提一部分可忽略邮件，也不把重要或灰区邮件误放进归档建议。
+
+当前 mock `review-proposals --limit 12 --all` 行为：
+
+- proposals: 3。
+- candidates: 2。
+- protected: 7。
+- no action: 0。
 
 ## 分类评估
 
@@ -268,9 +289,9 @@ server/data/real_email_labels.json
 
 该文件只保存 email id、subject、from、人工标签和预测结果，不保存正文；但仍包含真实邮箱元数据，不能提交。
 
-## 真实 Proposal 人工标签
+## 真实 Proposal/Candidate 人工标签
 
-目标是在不执行真实归档的前提下，评估真实邮箱 archive proposal 的可接受度。
+目标是在不执行真实归档的前提下，评估真实邮箱 archive proposal 的可接受度，并收集 candidate 中哪些邮件未来可以提升为 proposal。
 
 执行前提醒：这是一次真实 QQ/Foxmail 只读审核测试。可以运行 `review-proposals`、`proposal-labels`、`eval-real-proposals`；不要运行 `approve-proposal` 或 `execute-approved`。
 
@@ -284,8 +305,8 @@ uv run python email_cli.py eval-real-proposals
 
 标签：
 
-- `a` / `archive`：这个 proposal 可以接受归档。
-- `k` / `keep`：这个 proposal 不应该归档，计为误伤。
+- `a` / `archive`：这个 proposal/candidate 可以接受归档。
+- `k` / `keep`：这个 proposal/candidate 不应该归档；proposal 中的 keep 计为误伤。
 - `u` / `unsure`：无法判断，不进入 precision 分母。
 - `s` / `skip`：跳过。
 - `q` / `quit`：退出。
@@ -296,7 +317,7 @@ uv run python email_cli.py eval-real-proposals
 server/data/real_proposal_labels.json
 ```
 
-该文件只保存 proposal id、email id、subject、from、reason 和人工标签，不保存正文；但仍包含真实邮箱元数据，不能提交。
+该文件只保存 proposal/candidate id、email id、subject、from、reason 和人工标签，不保存正文；但仍包含真实邮箱元数据，不能提交。
 
 ## 记录原则
 

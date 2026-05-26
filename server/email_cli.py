@@ -153,7 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     review_proposals = subparsers.add_parser(
         "review-proposals",
-        help="Scan action proposals and optionally label whether each archive proposal is acceptable. Read-only for mailbox.",
+        help="Scan action proposals/candidates and optionally label whether each archive item is acceptable. Read-only for mailbox.",
     )
     review_proposals.add_argument("--limit", type=int, default=20)
     review_proposals.add_argument("--unread", action="store_true", help="Only scan unread emails.")
@@ -980,24 +980,24 @@ def _run_interactive_proposal_labeling(args: argparse.Namespace, result: dict[st
     labels_path = result.get("labels_path", str(DEFAULT_REAL_PROPOSAL_LABEL_PATH))
     saved_count = 0
     skipped_count = 0
-    for proposal in result.get("proposals", []):
-        proposal_id = str(proposal.get("proposal_id", "")).strip()
-        if not proposal_id:
+    for proposal in _review_label_items(result):
+        item_id = _proposal_item_id(proposal)
+        if not item_id:
             continue
         while True:
-            raw = input_func(f"Label {proposal_id} [a/k/u/s/q]: ").strip().lower()
+            raw = input_func(f"Label {item_id} [a/k/u/s/q]: ").strip().lower()
             label = _interactive_proposal_label(raw)
             if label == "quit":
                 print(f"Stopped. Saved: {saved_count}, skipped: {skipped_count}", file=stdout)
                 return
             if label == "skip":
                 skipped_count += 1
-                print(f"Skipped {proposal_id}", file=stdout)
+                print(f"Skipped {item_id}", file=stdout)
                 break
             if label:
                 save_real_proposal_label(labels_path, proposal=proposal, label=label)
                 saved_count += 1
-                print(f"Saved {proposal_id} -> {label}", file=stdout)
+                print(f"Saved {item_id} -> {label}", file=stdout)
                 break
             print("Use archive/a, keep/k, unsure/u, skip/s, or quit/q.", file=stdout)
     print(f"Done. Saved: {saved_count}, skipped: {skipped_count}", file=stdout)
@@ -1126,11 +1126,17 @@ def _print_propose(result: dict[str, Any], out: TextIO) -> None:
         file=out,
     )
     print(
-        f"Important: {result.get('important_count', 0)}, review: {result.get('review_count', 0)}, "
+        f"Protected: {result.get('protected_count', result.get('important_count', 0))}, "
+        f"candidates: {result.get('candidate_count', result.get('review_count', 0))}, "
         f"no action: {result.get('no_action_count', 0)}",
         file=out,
     )
-    _print_proposal_items(result.get("proposals", []), out)
+    if result.get("proposals"):
+        print("Proposals:", file=out)
+        _print_proposal_items(result.get("proposals", []), out)
+    if result.get("candidates"):
+        print("Candidates:", file=out)
+        _print_proposal_items(result.get("candidates", []), out)
 
 
 def _print_proposals(result: dict[str, Any], out: TextIO) -> None:
@@ -1153,8 +1159,8 @@ def _print_proposal_label_help(result: dict[str, Any], out: TextIO) -> None:
 def _print_proposal_items(proposals: list[dict[str, Any]], out: TextIO) -> None:
     for index, item in enumerate(proposals, start=1):
         print(
-            f"{index}. {item.get('proposal_id', '')} "
-            f"[{item.get('status', '')}/{item.get('risk_level', '')}] "
+            f"{index}. {_proposal_item_id(item)} "
+            f"[{item.get('status', item.get('item_type', ''))}/{item.get('risk_level', '')}] "
             f"{item.get('action', '')} {item.get('email_id', '')}",
             file=out,
         )
@@ -1166,7 +1172,7 @@ def _print_proposal_items(proposals: list[dict[str, Any]], out: TextIO) -> None:
 
 def _print_proposal_label(result: dict[str, Any], out: TextIO) -> None:
     record = result.get("record", {})
-    print(f"Saved proposal label: {record.get('proposal_id', '')} -> {record.get('label', '')}", file=out)
+    print(f"Saved proposal label: {_proposal_item_id(record)} -> {record.get('label', '')}", file=out)
     print(f"Labels file: {result.get('labels_path', '')}", file=out)
     print(f"Email: {record.get('email_id', '')}", file=out)
     if record.get("subject"):
@@ -1178,7 +1184,7 @@ def _print_proposal_labels(result: dict[str, Any], out: TextIO) -> None:
     print(f"Count: {result.get('count', 0)}", file=out)
     for index, record in enumerate(result.get("labels", []), start=1):
         print(
-            f"{index}. {record.get('proposal_id', '')} -> {record.get('label', '')} "
+            f"{index}. {_proposal_item_id(record)} -> {record.get('label', '')} "
             f"{record.get('action', '')} {record.get('email_id', '')}",
             file=out,
         )
@@ -1200,7 +1206,7 @@ def _print_eval_real_proposals(result: dict[str, Any], out: TextIO) -> None:
     false_positives = evaluation.get("false_positive_proposals", [])
     print(f"False positive proposals: {len(false_positives)}", file=out)
     for item in false_positives:
-        print(f"- {item.get('proposal_id', '')}: {_clip(item.get('subject', ''), 140)}", file=out)
+        print(f"- {_proposal_item_id(item)}: {_clip(item.get('subject', ''), 140)}", file=out)
 
 
 def _print_proposal_decision(command: str, result: dict[str, Any], out: TextIO) -> None:
@@ -1292,10 +1298,23 @@ def _mailbox_label(status: dict[str, Any], key: str) -> str:
     return value
 
 
+def _review_label_items(result: dict[str, Any]) -> list[dict[str, Any]]:
+    return [*list(result.get("proposals", [])), *list(result.get("candidates", []))]
+
+
+def _proposal_item_id(item: dict[str, Any]) -> str:
+    return (
+        str(item.get("proposal_id", "") or "").strip()
+        or str(item.get("candidate_id", "") or "").strip()
+        or str(item.get("item_id", "") or "").strip()
+        or str(item.get("email_id", "") or "").strip()
+    )
+
+
 def _find_proposal(proposals: list[dict[str, Any]], proposal_id: str) -> dict[str, Any] | None:
     proposal_id = proposal_id.strip()
     for proposal in proposals:
-        if str(proposal.get("proposal_id", "")) == proposal_id:
+        if _proposal_item_id(proposal) == proposal_id:
             return proposal
     return None
 

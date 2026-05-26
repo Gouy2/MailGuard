@@ -8,7 +8,7 @@
 - 真实邮箱：个人 QQ/Foxmail IMAP。
 - 主要入口：`server/email_cli.py`、`server/agent_cli.py`、`server/agent_smoke.py`。
 - 当前自动化基线：86 tests OK，1 skipped。
-- 近期重点：candidate expansion、真实 proposal 标注、observed memory。
+- 近期重点：真实 proposal/candidate 标注、observed memory。
 
 ## 文档职责
 
@@ -26,4 +26,3 @@
 - Memory 同时服务 LLM 和 policy，不只是 prompt 文本。
 - `protected` 不能被 LLM 直接推翻；`candidate` 是学习层，不执行。
 - 不提交 `.env`、API key、授权码、真实邮件正文、真实标签文件或完整 trace。
-
