@@ -24,6 +24,7 @@ from .email_scheduler import (
     run_email_scan,
 )
 from .llm_email_classifier import LLMEmailClassifier
+from .proposal_eval import evaluate_archive_proposal_policy
 from .tools import ToolContext, ToolPermission, ToolRegistry, ToolSpec, _normalize_relative_path
 
 
@@ -441,6 +442,22 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
             preferences=context.memory_store.email_preferences(context.session_id),
             limit=limit,
         )
+        return _compact_evaluation(evaluation, include_rows=include_rows)
+
+    def email_eval_proposals(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        limit = _bounded_int(args.get("limit"), default=100, minimum=1, maximum=500)
+        unread_only = bool(args.get("unread_only", False))
+        include_rows = bool(args.get("include_rows", False))
+        evaluation = evaluate_archive_proposal_policy(
+            provider=MockEmailProvider(),
+            classifier=classify_email,
+            preferences=context.memory_store.email_preferences(context.session_id),
+            limit=limit,
+            unread_only=unread_only,
+        )
+        evaluation["classifier"] = "rule"
+        evaluation["provider"] = "MockEmailProvider"
+        evaluation["mailbox_mutation"] = False
         return _compact_evaluation(evaluation, include_rows=include_rows)
 
     def email_eval_llm_shadow(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -964,6 +981,35 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
                 }
             ),
             handler=email_eval_mock,
+            permission=ToolPermission.READ,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_eval_proposals",
+            description="Evaluate low-risk archive proposal policy on labeled mock emails without mailbox mutation.",
+            input_schema=_schema(
+                {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum labeled mock emails to evaluate.",
+                        "default": 100,
+                        "minimum": 1,
+                        "maximum": 500,
+                    },
+                    "unread_only": {
+                        "type": "boolean",
+                        "description": "Only evaluate unread mock emails.",
+                        "default": False,
+                    },
+                    "include_rows": {
+                        "type": "boolean",
+                        "description": "Include per-email rows. Defaults to false to keep tool results compact.",
+                        "default": False,
+                    },
+                }
+            ),
+            handler=email_eval_proposals,
             permission=ToolPermission.READ,
         )
     )

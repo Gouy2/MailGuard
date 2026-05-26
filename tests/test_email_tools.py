@@ -25,9 +25,15 @@ from server.app.email_proposals import approve_action_proposal, execute_approved
 from server.app.email_tools import classify_email
 from server.app.llm_email_classifier import _normalize_decision, _parse_json_object
 from server.app.memory import MemoryStore
+from server.app.proposal_eval import evaluate_archive_proposal_policy
 from server.app.provider_factory import create_email_provider
 from server.app.qq_imap_provider import QQImapConfig, QQImapProvider
 from server.app.redaction import redact_for_trace
+from server.app.real_proposal_eval import (
+    evaluate_real_proposal_labels,
+    load_real_proposal_labels,
+    save_real_proposal_label,
+)
 from server.app.tracer import TraceLogger
 from server.app.real_email_eval import evaluate_real_labels, load_real_labels, save_real_label
 from server.app.sqlite_state import SQLiteStateStore
@@ -198,6 +204,7 @@ class EmailToolRuntimeTests(unittest.TestCase):
         self.assertIn("email_provider_status", names)
         self.assertIn("email_list_mailboxes", names)
         self.assertIn("email_eval_mock", names)
+        self.assertIn("email_eval_proposals", names)
         self.assertIn("email_eval_llm_shadow", names)
         self.assertIn("email_eval_report", names)
         self.assertNotIn("read_text_file", names)
@@ -622,6 +629,49 @@ class EmailToolRuntimeTests(unittest.TestCase):
         self.assertEqual(36, result["result"]["sample_count"])
         self.assertEqual(1.0, result["result"]["metrics"]["category_accuracy"])
         self.assertEqual([], result["result"]["mismatches"])
+
+    def test_archive_proposal_policy_eval_baseline(self) -> None:
+        result = evaluate_archive_proposal_policy(
+            provider=MockEmailProvider(),
+            classifier=classify_email,
+            limit=36,
+        )
+
+        self.assertEqual(36, result["sample_count"])
+        self.assertEqual(7, result["proposal_count"])
+        self.assertEqual(13, result["eligible_safe_archive_count"])
+        self.assertEqual(1.0, result["metrics"]["archive_proposal_precision"])
+        self.assertEqual(0.5385, result["metrics"]["archive_proposal_recall"])
+        self.assertEqual(0, result["metrics"]["false_positive_count"])
+        self.assertEqual(0, result["metrics"]["important_false_positive_count"])
+        self.assertEqual(
+            ["email-033", "email-029", "email-025", "email-022", "email-011", "email-005", "email-004"],
+            [item["email_id"] for item in result["proposals"]],
+        )
+
+    def test_archive_proposal_policy_eval_respects_important_preferences(self) -> None:
+        result = evaluate_archive_proposal_policy(
+            provider=MockEmailProvider(),
+            classifier=classify_email,
+            preferences={"important_senders": ["updates@learning.example"]},
+            limit=36,
+        )
+
+        self.assertNotIn("email-033", [item["email_id"] for item in result["proposals"]])
+        self.assertEqual(6, result["proposal_count"])
+        self.assertEqual(12, result["eligible_safe_archive_count"])
+        self.assertEqual(1.0, result["metrics"]["archive_proposal_precision"])
+
+    def test_proposal_evaluation_tool_is_readonly_and_compact(self) -> None:
+        result = self.runtime.execute_tool_for_test("email_eval_proposals", {"limit": 36})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("read", result["permission"])
+        self.assertEqual("MockEmailProvider", result["result"]["provider"])
+        self.assertFalse(result["result"]["mailbox_mutation"])
+        self.assertEqual(7, result["result"]["proposal_count"])
+        self.assertEqual(36, result["result"]["rows_omitted"])
+        self.assertNotIn("rows", result["result"])
 
     def test_eval_report_tool_writes_markdown_report(self) -> None:
         output_path = f"docs/test-logs/test-email-eval-report-{os.getpid()}.md"
@@ -1155,6 +1205,141 @@ class EmailCliTests(unittest.TestCase):
             runtime.execute_calls,
         )
         self.assertEqual(["pending-approve"], runtime.approved)
+
+    def test_eval_proposals_command_calls_expected_tool(self) -> None:
+        runtime = FakeCliRuntime(
+            execute_results=[
+                {
+                    "ok": True,
+                    "tool": "email_eval_proposals",
+                    "result": {
+                        "provider": "MockEmailProvider",
+                        "classifier": "rule",
+                        "mailbox_mutation": False,
+                        "sample_count": 36,
+                        "proposal_count": 7,
+                        "eligible_safe_archive_count": 13,
+                        "metrics": {
+                            "archive_proposal_precision": 1.0,
+                            "archive_proposal_recall": 0.5385,
+                            "false_positive_count": 0,
+                            "missed_safe_archive_count": 6,
+                            "important_false_positive_count": 0,
+                        },
+                        "false_positive_proposals": [],
+                        "missed_safe_archive": [],
+                    },
+                }
+            ]
+        )
+        stdout = StringIO()
+
+        exit_code = run_cli(
+            ["eval-proposals", "--limit", "36", "--unread"],
+            runtime_factory=lambda: runtime,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [("email_eval_proposals", {"limit": 36, "unread_only": True, "include_rows": False}, "email-cli")],
+            runtime.execute_calls,
+        )
+        self.assertIn("archive_proposal_precision: 1.0", stdout.getvalue())
+
+    def test_review_proposals_interactive_labeling_saves_labels_inline(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            labels_path = Path(temp_dir) / "real_proposal_labels.json"
+            runtime = FakeCliRuntime(
+                execute_results=[
+                    {
+                        "ok": True,
+                        "tool": "email_scan_proposals",
+                        "result": {
+                            "provider": "MockEmailProvider",
+                            "fetched": 1,
+                            "proposal_count": 1,
+                            "created_count": 1,
+                            "duplicate_count": 0,
+                            "important_count": 0,
+                            "review_count": 0,
+                            "no_action_count": 0,
+                            "proposals": [
+                                {
+                                    "proposal_id": "proposal-001",
+                                    "status": "proposed",
+                                    "risk_level": "low",
+                                    "source": "policy_rule",
+                                    "action": "archive",
+                                    "email_id": "email-004",
+                                    "from_name": "Design Weekly",
+                                    "from_email": "newsletter@example.com",
+                                    "subject": "Newsletter",
+                                    "reason": "low-value mail",
+                                }
+                            ],
+                        },
+                    }
+                ]
+            )
+            stdout = StringIO()
+
+            exit_code = run_cli(
+                ["review-proposals", "--limit", "1", "--all", "--label", "--labels-path", str(labels_path)],
+                runtime_factory=lambda: runtime,
+                stdout=stdout,
+                stderr=StringIO(),
+                input_func=lambda _prompt: "a",
+            )
+            saved = load_real_proposal_labels(labels_path)
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [("email_scan_proposals", {"limit": 1, "unread_only": False}, "email-cli")],
+            runtime.execute_calls,
+        )
+        self.assertEqual("archive", saved["labels"]["proposal-001"]["label"])
+        self.assertIn("Saved proposal-001 -> archive", stdout.getvalue())
+
+    def test_eval_real_proposals_command_prints_saved_metrics(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            labels_path = Path(temp_dir) / "real_proposal_labels.json"
+            save_real_proposal_label(
+                labels_path,
+                proposal={
+                    "proposal_id": "proposal-001",
+                    "email_id": "email-004",
+                    "action": "archive",
+                    "risk_level": "low",
+                    "subject": "Newsletter",
+                },
+                label="archive",
+            )
+            save_real_proposal_label(
+                labels_path,
+                proposal={
+                    "proposal_id": "proposal-002",
+                    "email_id": "email-010",
+                    "action": "archive",
+                    "risk_level": "low",
+                    "subject": "Important",
+                },
+                label="keep",
+            )
+            stdout = StringIO()
+
+            exit_code = run_cli(
+                ["eval-real-proposals", "--labels-path", str(labels_path)],
+                runtime_factory=lambda: FakeCliRuntime([]),
+                stdout=stdout,
+                stderr=StringIO(),
+            )
+
+        self.assertEqual(0, exit_code)
+        output = stdout.getvalue()
+        self.assertIn("archive_acceptance_precision: 0.5", output)
+        self.assertIn("false_positive_count: 1", output)
 
     def test_dangerous_command_without_yes_rejects_pending_preview(self) -> None:
         runtime = FakeCliRuntime(
@@ -1784,6 +1969,45 @@ class RealEmailEvalTests(unittest.TestCase):
         self.assertEqual(0.0, result["metrics"]["important_recall"])
         self.assertEqual(1, result["metrics"]["false_negative_count"])
         self.assertEqual(["imap-1"], [item["email_id"] for item in result["mismatches"]])
+
+
+class RealProposalEvalTests(unittest.TestCase):
+    def test_real_proposal_label_evaluation_tracks_false_positives(self) -> None:
+        label_data = {
+            "schema_version": 1,
+            "labels": {
+                "proposal-1": {
+                    "email_id": "imap-1",
+                    "label": "archive",
+                    "action": "archive",
+                    "risk_level": "low",
+                    "subject": "Newsletter",
+                },
+                "proposal-2": {
+                    "email_id": "imap-2",
+                    "label": "keep",
+                    "action": "archive",
+                    "risk_level": "low",
+                    "subject": "Important invoice",
+                },
+                "proposal-3": {
+                    "email_id": "imap-3",
+                    "label": "unsure",
+                    "action": "archive",
+                    "risk_level": "low",
+                    "subject": "Ambiguous",
+                },
+            },
+        }
+
+        result = evaluate_real_proposal_labels(label_data)
+
+        self.assertEqual(3, result["sample_count"])
+        self.assertEqual(2, result["decisive_count"])
+        self.assertEqual({"archive": 1, "keep": 1, "unsure": 1}, result["label_counts"])
+        self.assertEqual(0.5, result["metrics"]["archive_acceptance_precision"])
+        self.assertEqual(1, result["metrics"]["false_positive_count"])
+        self.assertEqual(["proposal-2"], [item["proposal_id"] for item in result["false_positive_proposals"]])
 
 
 class SQLiteMemoryPersistenceTests(unittest.TestCase):

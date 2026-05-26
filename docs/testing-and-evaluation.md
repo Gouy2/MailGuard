@@ -12,7 +12,7 @@ python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.
 当前基线：
 
 ```text
-78 tests OK (1 skipped when FastAPI is unavailable in root python)
+86 tests OK (1 skipped when FastAPI is unavailable in root python)
 py_compile passed
 ```
 
@@ -187,6 +187,7 @@ uv run python email_cli.py approve-proposal <proposal_id>
 uv run python email_cli.py reject-proposal <proposal_id>
 uv run python email_cli.py execute-approved
 uv run python email_cli.py audit
+uv run python email_cli.py eval-proposals --limit 36
 ```
 
 M1 边界：
@@ -197,6 +198,16 @@ M1 边界：
 - important sender/domain 偏好会阻止 archive proposal。
 - `email_approve_proposal` 仍走 dangerous pending，Agent 不能自行批准 proposal。
 - execute-approved 只执行已 approved 的 proposal，并写入 audit event。
+
+当前 proposal policy mock baseline：
+
+- `archive_proposal_precision`: 1.0。
+- `archive_proposal_recall`: 0.5385。
+- `false_positive_count`: 0。
+- `important_false_positive_count`: 0。
+- `missed_safe_archive_count`: 6。
+
+这个指标用于证明当前策略是 precision-first：宁可漏提一部分可忽略邮件，也不把重要或灰区邮件误放进归档建议。
 
 ## 分类评估
 
@@ -256,6 +267,36 @@ server/data/real_email_labels.json
 ```
 
 该文件只保存 email id、subject、from、人工标签和预测结果，不保存正文；但仍包含真实邮箱元数据，不能提交。
+
+## 真实 Proposal 人工标签
+
+目标是在不执行真实归档的前提下，评估真实邮箱 archive proposal 的可接受度。
+
+执行前提醒：这是一次真实 QQ/Foxmail 只读审核测试。可以运行 `review-proposals`、`proposal-labels`、`eval-real-proposals`；不要运行 `approve-proposal` 或 `execute-approved`。
+
+```bash
+cd server
+export MAILGUARD_STATE_DB=data/mailguard_state.db
+uv run python email_cli.py review-proposals --limit 20 --unread --label
+uv run python email_cli.py proposal-labels
+uv run python email_cli.py eval-real-proposals
+```
+
+标签：
+
+- `a` / `archive`：这个 proposal 可以接受归档。
+- `k` / `keep`：这个 proposal 不应该归档，计为误伤。
+- `u` / `unsure`：无法判断，不进入 precision 分母。
+- `s` / `skip`：跳过。
+- `q` / `quit`：退出。
+
+默认标签文件：
+
+```text
+server/data/real_proposal_labels.json
+```
+
+该文件只保存 proposal id、email id、subject、from、reason 和人工标签，不保存正文；但仍包含真实邮箱元数据，不能提交。
 
 ## 记录原则
 

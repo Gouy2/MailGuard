@@ -1,8 +1,10 @@
-# 项目总览
+# 项目总览（已归档）
+
+> 归档说明：这份文档记录 2026-05-26 阶段的项目总览快照。当前状态见 [项目状态](../project-state.md)，架构决策见 [架构决策](../decisions.md)。
 
 MailGuard 是一个本地优先的邮件管理 Agent。当前目标是把现有 tool calling、真实 QQ/Foxmail 接入和审批边界升级为安全可审计的邮件自动化闭环，而不是先做通用聊天、复杂 UI 或旧桌宠体验。
 
-近期执行计划以 [当前开发计划](./current-development-plan.md) 为准。
+近期执行计划当时以已归档的 [当前开发计划](./current-development-plan-2026-05-26.md) 为准。
 
 ## 当前能力
 
@@ -30,13 +32,15 @@ Triage：
 - 结构化偏好：important / ignored sender、domain、category，report schedule，timezone。
 - headless scheduler、notification outbox、digest、去重。
 - Action Proposal + Audit Log：低风险 archive proposal、审批/拒绝、approved execution、失败审计。
-- mock eval、LLM shadow eval、real mailbox manual label/eval。
+- mock eval、proposal policy eval、real proposal label/eval、LLM shadow eval、real mailbox manual label/eval。
 - opt-in SQLite persistence：preferences、reported ids、notifications、scan history。
 
 ## 已验证
 
-- 自动化回归：`78 tests OK (1 skipped when FastAPI is unavailable in root python)`。
+- 自动化回归：`86 tests OK (1 skipped when FastAPI is unavailable in root python)`。
 - 编译检查通过。
+- Proposal policy mock baseline：precision 1.0、recall 0.5385、false_positive_count 0。
+- Real proposal label/eval 自动化回归通过；真实 QQ/Foxmail 人工审核尚未执行。
 - Mock agent smoke：read tool、多步 tool-use、approve/reject。
 - Live LLM mock-provider smoke：真实 LLM 能调用邮件读工具，不触碰真实邮箱。
 - 真实 QQ/Foxmail read-only agent smoke：只读工具，`used_write_tool=false`。
@@ -95,4 +99,5 @@ OPENAI_BASE_URL=...
 
 - `server/.env`
 - `server/data/real_email_labels.json`
+- `server/data/real_proposal_labels.json`
 - `.mailguard/traces/`

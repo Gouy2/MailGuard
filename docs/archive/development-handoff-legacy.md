@@ -1,8 +1,8 @@
 # 开发接手指南
 
-> 归档说明：这份文档记录的是旧阶段接手上下文，已不再作为当前开发路线依据。当前计划见 `../current-development-plan.md`。
+> 归档说明：这份文档记录的是旧阶段接手上下文，已不再作为当前开发路线依据。当前路线见 `../project-state.md` 和 `../decisions.md`。
 
-这是一页上下文恢复文档。细节以 `../architecture.md`、`../testing-and-evaluation.md` 和 `../current-development-plan.md` 为准。
+这是一页上下文恢复文档。细节以 `../architecture.md`、`../testing-and-evaluation.md`、`../project-state.md` 和 `../decisions.md` 为准。
 
 ## 当前定位
 

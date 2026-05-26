@@ -15,18 +15,29 @@ if __package__ in {None, ""}:  # pragma: no cover - runtime path bootstrap for s
 
 try:
     from app.agent import AgentRuntime
+    from app.real_proposal_eval import (
+        evaluate_real_proposal_labels,
+        load_real_proposal_labels,
+        save_real_proposal_label,
+    )
     from app.real_email_eval import evaluate_real_labels, load_real_labels, save_real_label
     from app.runtime_env import SERVER_ROOT
 except ModuleNotFoundError as exc:  # pragma: no cover - used when imported from repo root
     if exc.name != "app":
         raise
     from server.app.agent import AgentRuntime
+    from server.app.real_proposal_eval import (
+        evaluate_real_proposal_labels,
+        load_real_proposal_labels,
+        save_real_proposal_label,
+    )
     from server.app.real_email_eval import evaluate_real_labels, load_real_labels, save_real_label
     from server.app.runtime_env import SERVER_ROOT
 
 
 DEFAULT_SESSION_ID = "email-cli"
 DEFAULT_REAL_LABEL_PATH = SERVER_ROOT / "data" / "real_email_labels.json"
+DEFAULT_REAL_PROPOSAL_LABEL_PATH = SERVER_ROOT / "data" / "real_proposal_labels.json"
 RuntimeFactory = Callable[[], Any]
 InputFunc = Callable[[str], str]
 
@@ -110,6 +121,15 @@ def build_parser() -> argparse.ArgumentParser:
     eval_real.add_argument("--labels-path", default=str(DEFAULT_REAL_LABEL_PATH))
     eval_real.set_defaults(func=_cmd_eval_real, display_command="eval-real")
 
+    eval_proposals = subparsers.add_parser(
+        "eval-proposals",
+        help="Evaluate archive proposal policy on labeled mock emails. Read-only.",
+    )
+    eval_proposals.add_argument("--limit", type=int, default=36)
+    eval_proposals.add_argument("--unread", action="store_true", help="Only evaluate unread mock emails.")
+    eval_proposals.add_argument("--include-rows", action="store_true", help="Include per-email rows in JSON output.")
+    eval_proposals.set_defaults(func=_cmd_eval_proposals, display_command="eval-proposals")
+
     scan = subparsers.add_parser("scan", help="Run one scheduler scan and create local notifications.")
     scan.add_argument("--limit", type=int, default=20)
     scan.add_argument("--all", action="store_true", help="Scan all recent mail instead of unread only.")
@@ -131,10 +151,39 @@ def build_parser() -> argparse.ArgumentParser:
     propose.add_argument("--all", action="store_true", help="Scan all recent mail instead of unread only.")
     propose.set_defaults(func=_cmd_propose, display_command="propose")
 
+    review_proposals = subparsers.add_parser(
+        "review-proposals",
+        help="Scan action proposals and optionally label whether each archive proposal is acceptable. Read-only for mailbox.",
+    )
+    review_proposals.add_argument("--limit", type=int, default=20)
+    review_proposals.add_argument("--unread", action="store_true", help="Only scan unread emails.")
+    review_proposals.add_argument("--all", action="store_true", help="Scan all recent mail instead of unread only.")
+    review_proposals.add_argument("--label", action="store_true", help="Interactively label returned proposals.")
+    review_proposals.add_argument("--labels-path", default=str(DEFAULT_REAL_PROPOSAL_LABEL_PATH))
+    review_proposals.set_defaults(func=_cmd_review_proposals, display_command="review-proposals")
+
     proposals = subparsers.add_parser("proposals", help="List action proposals.")
     proposals.add_argument("--status", default="", help="Optional status filter.")
     proposals.add_argument("--limit", type=int, default=100)
     proposals.set_defaults(func=_cmd_proposals, display_command="proposals")
+
+    label_proposal = subparsers.add_parser("label-proposal", help="Save a local label for one action proposal.")
+    label_proposal.add_argument("proposal_id")
+    label_proposal.add_argument("label", choices=["archive", "keep", "unsure"])
+    label_proposal.add_argument("--note", default="")
+    label_proposal.add_argument("--labels-path", default=str(DEFAULT_REAL_PROPOSAL_LABEL_PATH))
+    label_proposal.set_defaults(func=_cmd_label_proposal, display_command="label-proposal")
+
+    proposal_labels = subparsers.add_parser("proposal-labels", help="List saved action proposal labels.")
+    proposal_labels.add_argument("--labels-path", default=str(DEFAULT_REAL_PROPOSAL_LABEL_PATH))
+    proposal_labels.set_defaults(func=_cmd_proposal_labels, display_command="proposal-labels")
+
+    eval_real_proposals = subparsers.add_parser(
+        "eval-real-proposals",
+        help="Evaluate saved real action proposal labels.",
+    )
+    eval_real_proposals.add_argument("--labels-path", default=str(DEFAULT_REAL_PROPOSAL_LABEL_PATH))
+    eval_real_proposals.set_defaults(func=_cmd_eval_real_proposals, display_command="eval-real-proposals")
 
     approve_proposal = subparsers.add_parser("approve-proposal", help="Approve one action proposal.")
     approve_proposal.add_argument("proposal_id")
@@ -387,6 +436,15 @@ def _cmd_eval_real(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
     }
 
 
+def _cmd_eval_proposals(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    return _execute_tool(
+        runtime,
+        "email_eval_proposals",
+        {"limit": args.limit, "unread_only": args.unread, "include_rows": args.include_rows},
+        session_id=args.session_id,
+    )
+
+
 def _cmd_scan(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
     return _execute_tool(
         runtime,
@@ -423,6 +481,21 @@ def _cmd_propose(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
     )
 
 
+def _cmd_review_proposals(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    result = _cmd_propose(args, runtime)
+    if result.get("ok"):
+        result["tool"] = "email_review_proposals"
+        result["result"]["label_help"] = {
+            "archive": "proposal is acceptable to archive",
+            "keep": "proposal should not be archived",
+            "unsure": "cannot decide from metadata/snippet",
+        }
+        if args.label:
+            result["result"]["interactive_labeling"] = True
+            result["result"]["labels_path"] = str(Path(args.labels_path))
+    return result
+
+
 def _cmd_proposals(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
     return _execute_tool(
         runtime,
@@ -430,6 +503,65 @@ def _cmd_proposals(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
         {"status": args.status, "limit": args.limit},
         session_id=args.session_id,
     )
+
+
+def _cmd_label_proposal(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    listed = _execute_tool(
+        runtime,
+        "email_list_proposals",
+        {"status": "", "limit": 500},
+        session_id=args.session_id,
+    )
+    if not listed.get("ok"):
+        return listed
+    proposal = _find_proposal(listed["result"].get("proposals", []), args.proposal_id)
+    if proposal is None:
+        return {
+            "ok": False,
+            "tool": "email_label_proposal",
+            "error": f"proposal not found: {args.proposal_id}",
+        }
+    record = save_real_proposal_label(
+        args.labels_path,
+        proposal=proposal,
+        label=args.label,
+        note=args.note,
+    )
+    return {
+        "ok": True,
+        "tool": "email_label_proposal",
+        "result": {
+            "labels_path": str(Path(args.labels_path)),
+            "record": record,
+        },
+    }
+
+
+def _cmd_proposal_labels(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    data = load_real_proposal_labels(args.labels_path)
+    records = sorted(data.get("labels", {}).values(), key=lambda item: item.get("labeled_at", ""), reverse=True)
+    return {
+        "ok": True,
+        "tool": "email_proposal_labels_real",
+        "result": {
+            "labels_path": str(Path(args.labels_path)),
+            "count": len(records),
+            "labels": records,
+        },
+    }
+
+
+def _cmd_eval_real_proposals(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    data = load_real_proposal_labels(args.labels_path)
+    evaluation = evaluate_real_proposal_labels(data)
+    return {
+        "ok": True,
+        "tool": "email_eval_real_proposals",
+        "result": {
+            "labels_path": str(Path(args.labels_path)),
+            "evaluation": evaluation,
+        },
+    }
 
 
 def _cmd_approve_proposal(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
@@ -591,14 +723,27 @@ def _print_human(args: argparse.Namespace, result: dict[str, Any], *, stdout: Te
         _print_labels(result["result"], stdout)
     elif command == "eval-real":
         _print_eval_real(result["result"], stdout)
+    elif command == "eval-proposals":
+        _print_eval_proposals(result["result"], stdout)
     elif command == "scan":
         _print_scan(result["result"], stdout)
     elif command == "notifications":
         _print_notifications(result["result"], stdout)
     elif command == "propose":
         _print_propose(result["result"], stdout)
+    elif command == "review-proposals":
+        _print_propose(result["result"], stdout)
+        _print_proposal_label_help(result["result"], stdout)
+        if result["result"].get("interactive_labeling"):
+            _run_interactive_proposal_labeling(args, result["result"], stdout=stdout)
     elif command == "proposals":
         _print_proposals(result["result"], stdout)
+    elif command == "label-proposal":
+        _print_proposal_label(result["result"], stdout)
+    elif command == "proposal-labels":
+        _print_proposal_labels(result["result"], stdout)
+    elif command == "eval-real-proposals":
+        _print_eval_real_proposals(result["result"], stdout)
     elif command in {"approve-proposal", "reject-proposal"}:
         _print_proposal_decision(command, result["result"], stdout)
     elif command == "execute-approved":
@@ -830,6 +975,56 @@ def _interactive_label(value: str) -> str:
     return mapping.get(value, "")
 
 
+def _run_interactive_proposal_labeling(args: argparse.Namespace, result: dict[str, Any], *, stdout: TextIO) -> None:
+    input_func = getattr(args, "_input_func", input)
+    labels_path = result.get("labels_path", str(DEFAULT_REAL_PROPOSAL_LABEL_PATH))
+    saved_count = 0
+    skipped_count = 0
+    for proposal in result.get("proposals", []):
+        proposal_id = str(proposal.get("proposal_id", "")).strip()
+        if not proposal_id:
+            continue
+        while True:
+            raw = input_func(f"Label {proposal_id} [a/k/u/s/q]: ").strip().lower()
+            label = _interactive_proposal_label(raw)
+            if label == "quit":
+                print(f"Stopped. Saved: {saved_count}, skipped: {skipped_count}", file=stdout)
+                return
+            if label == "skip":
+                skipped_count += 1
+                print(f"Skipped {proposal_id}", file=stdout)
+                break
+            if label:
+                save_real_proposal_label(labels_path, proposal=proposal, label=label)
+                saved_count += 1
+                print(f"Saved {proposal_id} -> {label}", file=stdout)
+                break
+            print("Use archive/a, keep/k, unsure/u, skip/s, or quit/q.", file=stdout)
+    print(f"Done. Saved: {saved_count}, skipped: {skipped_count}", file=stdout)
+
+
+def _interactive_proposal_label(value: str) -> str:
+    mapping = {
+        "archive": "archive",
+        "a": "archive",
+        "safe": "archive",
+        "yes": "archive",
+        "y": "archive",
+        "keep": "keep",
+        "k": "keep",
+        "no": "keep",
+        "n": "keep",
+        "unsure": "unsure",
+        "u": "unsure",
+        "unclear": "unsure",
+        "skip": "skip",
+        "s": "skip",
+        "quit": "quit",
+        "q": "quit",
+    }
+    return mapping.get(value, "")
+
+
 def _print_label(result: dict[str, Any], out: TextIO) -> None:
     record = result.get("record", {})
     print(f"Saved label: {record.get('email_id', '')} -> {record.get('label', '')}", file=out)
@@ -871,6 +1066,28 @@ def _print_eval_real(result: dict[str, Any], out: TextIO) -> None:
             f"predicted={item.get('predicted_importance', '')}/{item.get('predicted_category', '')}",
             file=out,
         )
+
+
+def _print_eval_proposals(result: dict[str, Any], out: TextIO) -> None:
+    metrics = result.get("metrics", {})
+    print(f"Provider: {result.get('provider', '')}", file=out)
+    print(f"Classifier: {result.get('classifier', '')}", file=out)
+    print(f"Mailbox mutation: {bool(result.get('mailbox_mutation', False))}", file=out)
+    print(
+        f"Sample count: {result.get('sample_count', 0)}, proposals: {result.get('proposal_count', 0)}, "
+        f"eligible safe archive: {result.get('eligible_safe_archive_count', 0)}",
+        file=out,
+    )
+    for key in sorted(metrics):
+        print(f"{key}: {metrics[key]}", file=out)
+    false_positives = result.get("false_positive_proposals", [])
+    missed = result.get("missed_safe_archive", [])
+    print(f"False positive proposals: {len(false_positives)}", file=out)
+    for item in false_positives:
+        print(f"- {item.get('email_id', '')}: {_clip(item.get('subject', ''), 140)}", file=out)
+    print(f"Missed safe archive: {len(missed)}", file=out)
+    for item in missed[:10]:
+        print(f"- {item.get('email_id', '')}: {_clip(item.get('subject', ''), 140)}", file=out)
 
 
 def _print_scan(result: dict[str, Any], out: TextIO) -> None:
@@ -923,6 +1140,16 @@ def _print_proposals(result: dict[str, Any], out: TextIO) -> None:
     _print_proposal_items(result.get("proposals", []), out)
 
 
+def _print_proposal_label_help(result: dict[str, Any], out: TextIO) -> None:
+    if not result.get("label_help"):
+        return
+    print("Labels: archive | keep | unsure", file=out)
+    if result.get("interactive_labeling"):
+        print("Interactive input: archive/a | keep/k | unsure/u | skip/s | quit/q", file=out)
+    else:
+        print("Example: uv run python email_cli.py label-proposal proposal-123 archive", file=out)
+
+
 def _print_proposal_items(proposals: list[dict[str, Any]], out: TextIO) -> None:
     for index, item in enumerate(proposals, start=1):
         print(
@@ -935,6 +1162,45 @@ def _print_proposal_items(proposals: list[dict[str, Any]], out: TextIO) -> None:
         print(f"   Subject: {_clip(item.get('subject', ''), 140)}", file=out)
         if item.get("reason"):
             print(f"   Reason: {_clip(item.get('reason', ''), 220)}", file=out)
+
+
+def _print_proposal_label(result: dict[str, Any], out: TextIO) -> None:
+    record = result.get("record", {})
+    print(f"Saved proposal label: {record.get('proposal_id', '')} -> {record.get('label', '')}", file=out)
+    print(f"Labels file: {result.get('labels_path', '')}", file=out)
+    print(f"Email: {record.get('email_id', '')}", file=out)
+    if record.get("subject"):
+        print(f"Subject: {_clip(record.get('subject', ''), 140)}", file=out)
+
+
+def _print_proposal_labels(result: dict[str, Any], out: TextIO) -> None:
+    print(f"Labels file: {result.get('labels_path', '')}", file=out)
+    print(f"Count: {result.get('count', 0)}", file=out)
+    for index, record in enumerate(result.get("labels", []), start=1):
+        print(
+            f"{index}. {record.get('proposal_id', '')} -> {record.get('label', '')} "
+            f"{record.get('action', '')} {record.get('email_id', '')}",
+            file=out,
+        )
+        print(f"   Subject: {_clip(record.get('subject', ''), 140)}", file=out)
+
+
+def _print_eval_real_proposals(result: dict[str, Any], out: TextIO) -> None:
+    evaluation = result.get("evaluation", {})
+    metrics = evaluation.get("metrics", {})
+    print(f"Labels file: {result.get('labels_path', '')}", file=out)
+    print(
+        f"Sample count: {evaluation.get('sample_count', 0)}, "
+        f"decisive: {evaluation.get('decisive_count', 0)}",
+        file=out,
+    )
+    print(f"Label counts: {evaluation.get('label_counts', {})}", file=out)
+    for key in sorted(metrics):
+        print(f"{key}: {metrics[key]}", file=out)
+    false_positives = evaluation.get("false_positive_proposals", [])
+    print(f"False positive proposals: {len(false_positives)}", file=out)
+    for item in false_positives:
+        print(f"- {item.get('proposal_id', '')}: {_clip(item.get('subject', ''), 140)}", file=out)
 
 
 def _print_proposal_decision(command: str, result: dict[str, Any], out: TextIO) -> None:
@@ -1024,6 +1290,14 @@ def _mailbox_label(status: dict[str, Any], key: str) -> str:
     if display and display != value:
         return f"{display} ({value})"
     return value
+
+
+def _find_proposal(proposals: list[dict[str, Any]], proposal_id: str) -> dict[str, Any] | None:
+    proposal_id = proposal_id.strip()
+    for proposal in proposals:
+        if str(proposal.get("proposal_id", "")) == proposal_id:
+            return proposal
+    return None
 
 
 def _is_success(result: dict[str, Any]) -> bool:
