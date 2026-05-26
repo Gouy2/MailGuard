@@ -8,6 +8,14 @@ from typing import Any
 from .email_eval import evaluate_email_classifier
 from .email_eval_report import write_eval_report
 from .email_provider import EmailMessage, EmailProvider, MockEmailProvider
+from .email_proposals import (
+    action_audit_log,
+    approve_action_proposal,
+    execute_approved_action_proposals,
+    list_action_proposals,
+    reject_action_proposal,
+    scan_action_proposals,
+)
 from .email_scheduler import (
     email_daily_digest,
     email_scheduler_state,
@@ -362,6 +370,67 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
 
     def email_scheduler_state_tool(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         return email_scheduler_state(memory_store=context.memory_store, session_id=context.session_id)
+
+    def email_scan_proposals(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        limit = _bounded_int(args.get("limit"), default=20, minimum=1, maximum=100)
+        unread_only = bool(args.get("unread_only", True))
+        return scan_action_proposals(
+            provider=email_provider,
+            memory_store=context.memory_store,
+            session_id=context.session_id,
+            classifier=classify_email,
+            limit=limit,
+            unread_only=unread_only,
+        )
+
+    def email_list_proposals(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        status = str(args.get("status", "")).strip().lower()
+        limit = _bounded_int(args.get("limit"), default=100, minimum=1, maximum=500)
+        return list_action_proposals(
+            memory_store=context.memory_store,
+            session_id=context.session_id,
+            status=status,
+            limit=limit,
+        )
+
+    def email_approve_proposal(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        proposal_id = _required_string(args, "proposal_id")
+        return approve_action_proposal(
+            memory_store=context.memory_store,
+            session_id=context.session_id,
+            proposal_id=proposal_id,
+        )
+
+    def email_reject_proposal(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        proposal_id = _required_string(args, "proposal_id")
+        reason = str(args.get("reason", "")).strip()
+        return reject_action_proposal(
+            memory_store=context.memory_store,
+            session_id=context.session_id,
+            proposal_id=proposal_id,
+            reason=reason,
+        )
+
+    def email_execute_approved_proposals(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        limit = _bounded_int(args.get("limit"), default=20, minimum=1, maximum=100)
+        return execute_approved_action_proposals(
+            provider=email_provider,
+            memory_store=context.memory_store,
+            session_id=context.session_id,
+            limit=limit,
+        )
+
+    def email_audit_log(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        proposal_id = str(args.get("proposal_id", "")).strip()
+        email_id = str(args.get("email_id", "")).strip()
+        limit = _bounded_int(args.get("limit"), default=100, minimum=1, maximum=500)
+        return action_audit_log(
+            memory_store=context.memory_store,
+            session_id=context.session_id,
+            proposal_id=proposal_id,
+            email_id=email_id,
+            limit=limit,
+        )
 
     def email_eval_mock(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         limit = _bounded_int(args.get("limit"), default=100, minimum=1, maximum=500)
@@ -755,6 +824,122 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
             description="Inspect local scheduler dedupe and scan state.",
             input_schema=_schema({}),
             handler=email_scheduler_state_tool,
+            permission=ToolPermission.READ,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_scan_proposals",
+            description="Scan recent mail and create low-risk archive action proposals with audit events.",
+            input_schema=_schema(
+                {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of recent emails to scan.",
+                        "default": 20,
+                        "minimum": 1,
+                        "maximum": 100,
+                    },
+                    "unread_only": {
+                        "type": "boolean",
+                        "description": "Only scan unread emails.",
+                        "default": True,
+                    },
+                }
+            ),
+            handler=email_scan_proposals,
+            permission=ToolPermission.WRITE,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_list_proposals",
+            description="List persisted action proposals for this session.",
+            input_schema=_schema(
+                {
+                    "status": {
+                        "type": "string",
+                        "description": "Optional proposal status filter, such as proposed, approved, rejected, executed, or failed.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum proposals to return.",
+                        "default": 100,
+                        "minimum": 1,
+                        "maximum": 500,
+                    },
+                }
+            ),
+            handler=email_list_proposals,
+            permission=ToolPermission.READ,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_approve_proposal",
+            description="Approve one action proposal for later execution.",
+            input_schema=_schema(
+                {
+                    "proposal_id": {"type": "string", "description": "Action proposal id."},
+                },
+                required=["proposal_id"],
+            ),
+            handler=email_approve_proposal,
+            permission=ToolPermission.DANGEROUS,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_reject_proposal",
+            description="Reject one action proposal so it will not execute.",
+            input_schema=_schema(
+                {
+                    "proposal_id": {"type": "string", "description": "Action proposal id."},
+                    "reason": {"type": "string", "description": "Optional rejection reason."},
+                },
+                required=["proposal_id"],
+            ),
+            handler=email_reject_proposal,
+            permission=ToolPermission.WRITE,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_execute_approved_proposals",
+            description="Execute approved action proposals. M1 only supports approved archive proposals.",
+            input_schema=_schema(
+                {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum approved proposals to execute.",
+                        "default": 20,
+                        "minimum": 1,
+                        "maximum": 100,
+                    },
+                }
+            ),
+            handler=email_execute_approved_proposals,
+            permission=ToolPermission.WRITE,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_audit_log",
+            description="Read product audit events for action proposals.",
+            input_schema=_schema(
+                {
+                    "proposal_id": {"type": "string", "description": "Optional action proposal id filter."},
+                    "email_id": {"type": "string", "description": "Optional email id filter."},
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum audit events to return.",
+                        "default": 100,
+                        "minimum": 1,
+                        "maximum": 500,
+                    },
+                }
+            ),
+            handler=email_audit_log,
             permission=ToolPermission.READ,
         )
     )

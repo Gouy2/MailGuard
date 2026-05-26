@@ -1,7 +1,7 @@
 [project]
 name = "mailguard-server"
 version = "0.1.0"
-description = "MailGuard desktop pet backend server"
+description = "MailGuard local email management agent server"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

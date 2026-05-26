@@ -125,6 +125,36 @@ def build_parser() -> argparse.ArgumentParser:
     notifications.add_argument("--include-read", action="store_true")
     notifications.set_defaults(func=_cmd_notifications, display_command="notifications")
 
+    propose = subparsers.add_parser("propose", help="Scan mail and create low-risk archive action proposals.")
+    propose.add_argument("--limit", type=int, default=20)
+    propose.add_argument("--unread", action="store_true", help="Only scan unread emails.")
+    propose.add_argument("--all", action="store_true", help="Scan all recent mail instead of unread only.")
+    propose.set_defaults(func=_cmd_propose, display_command="propose")
+
+    proposals = subparsers.add_parser("proposals", help="List action proposals.")
+    proposals.add_argument("--status", default="", help="Optional status filter.")
+    proposals.add_argument("--limit", type=int, default=100)
+    proposals.set_defaults(func=_cmd_proposals, display_command="proposals")
+
+    approve_proposal = subparsers.add_parser("approve-proposal", help="Approve one action proposal.")
+    approve_proposal.add_argument("proposal_id")
+    approve_proposal.set_defaults(func=_cmd_approve_proposal, display_command="approve-proposal")
+
+    reject_proposal = subparsers.add_parser("reject-proposal", help="Reject one action proposal.")
+    reject_proposal.add_argument("proposal_id")
+    reject_proposal.add_argument("--reason", default="")
+    reject_proposal.set_defaults(func=_cmd_reject_proposal, display_command="reject-proposal")
+
+    execute_approved = subparsers.add_parser("execute-approved", help="Execute approved action proposals.")
+    execute_approved.add_argument("--limit", type=int, default=20)
+    execute_approved.set_defaults(func=_cmd_execute_approved, display_command="execute-approved")
+
+    audit = subparsers.add_parser("audit", help="List action proposal audit events.")
+    audit.add_argument("--proposal-id", default="")
+    audit.add_argument("--email-id", default="")
+    audit.add_argument("--limit", type=int, default=100)
+    audit.set_defaults(func=_cmd_audit, display_command="audit")
+
     mark_read = subparsers.add_parser(
         "mark-read",
         aliases=["mark_read"],
@@ -379,6 +409,66 @@ def _cmd_notifications(args: argparse.Namespace, runtime: Any) -> dict[str, Any]
     )
 
 
+def _cmd_propose(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    unread_only = True
+    if args.all:
+        unread_only = False
+    elif args.unread:
+        unread_only = True
+    return _execute_tool(
+        runtime,
+        "email_scan_proposals",
+        {"limit": args.limit, "unread_only": unread_only},
+        session_id=args.session_id,
+    )
+
+
+def _cmd_proposals(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    return _execute_tool(
+        runtime,
+        "email_list_proposals",
+        {"status": args.status, "limit": args.limit},
+        session_id=args.session_id,
+    )
+
+
+def _cmd_approve_proposal(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    return _execute_dangerous_tool(
+        runtime,
+        "email_approve_proposal",
+        {"proposal_id": args.proposal_id},
+        session_id=args.session_id,
+        approve=True,
+    )
+
+
+def _cmd_reject_proposal(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    return _execute_tool(
+        runtime,
+        "email_reject_proposal",
+        {"proposal_id": args.proposal_id, "reason": args.reason},
+        session_id=args.session_id,
+    )
+
+
+def _cmd_execute_approved(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    return _execute_tool(
+        runtime,
+        "email_execute_approved_proposals",
+        {"limit": args.limit},
+        session_id=args.session_id,
+    )
+
+
+def _cmd_audit(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    return _execute_tool(
+        runtime,
+        "email_audit_log",
+        {"proposal_id": args.proposal_id, "email_id": args.email_id, "limit": args.limit},
+        session_id=args.session_id,
+    )
+
+
 def _cmd_mark_read(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
     return _execute_dangerous_tool(
         runtime,
@@ -505,6 +595,16 @@ def _print_human(args: argparse.Namespace, result: dict[str, Any], *, stdout: Te
         _print_scan(result["result"], stdout)
     elif command == "notifications":
         _print_notifications(result["result"], stdout)
+    elif command == "propose":
+        _print_propose(result["result"], stdout)
+    elif command == "proposals":
+        _print_proposals(result["result"], stdout)
+    elif command in {"approve-proposal", "reject-proposal"}:
+        _print_proposal_decision(command, result["result"], stdout)
+    elif command == "execute-approved":
+        _print_execute_approved(result["result"], stdout)
+    elif command == "audit":
+        _print_audit(result["result"], stdout)
     elif command in {"mark-read", "archive", "star", "draft"}:
         _print_mutation_result(command, result["result"], stdout)
     else:
@@ -799,6 +899,76 @@ def _print_notifications(result: dict[str, Any], out: TextIO) -> None:
         )
         print(f"   Subject: {_clip(item.get('subject', ''), 140)}", file=out)
         print(f"   Action: {item.get('suggested_action', '')}", file=out)
+
+
+def _print_propose(result: dict[str, Any], out: TextIO) -> None:
+    print(f"Provider: {result.get('provider', '')}", file=out)
+    print(
+        f"Fetched: {result.get('fetched', 0)}, proposals: {result.get('proposal_count', 0)}, "
+        f"created: {result.get('created_count', 0)}, duplicates: {result.get('duplicate_count', 0)}",
+        file=out,
+    )
+    print(
+        f"Important: {result.get('important_count', 0)}, review: {result.get('review_count', 0)}, "
+        f"no action: {result.get('no_action_count', 0)}",
+        file=out,
+    )
+    _print_proposal_items(result.get("proposals", []), out)
+
+
+def _print_proposals(result: dict[str, Any], out: TextIO) -> None:
+    status = result.get("status") or "all"
+    print(f"Status: {status}", file=out)
+    print(f"Count: {result.get('count', 0)}", file=out)
+    _print_proposal_items(result.get("proposals", []), out)
+
+
+def _print_proposal_items(proposals: list[dict[str, Any]], out: TextIO) -> None:
+    for index, item in enumerate(proposals, start=1):
+        print(
+            f"{index}. {item.get('proposal_id', '')} "
+            f"[{item.get('status', '')}/{item.get('risk_level', '')}] "
+            f"{item.get('action', '')} {item.get('email_id', '')}",
+            file=out,
+        )
+        print(f"   From: {_format_sender(item)}", file=out)
+        print(f"   Subject: {_clip(item.get('subject', ''), 140)}", file=out)
+        if item.get("reason"):
+            print(f"   Reason: {_clip(item.get('reason', ''), 220)}", file=out)
+
+
+def _print_proposal_decision(command: str, result: dict[str, Any], out: TextIO) -> None:
+    proposal = result.get("proposal", {})
+    print(f"Action: {command}", file=out)
+    print(f"Proposal: {proposal.get('proposal_id', '')}", file=out)
+    print(f"Status: {proposal.get('status', '')}", file=out)
+    print(f"Email: {proposal.get('email_id', '')}", file=out)
+
+
+def _print_execute_approved(result: dict[str, Any], out: TextIO) -> None:
+    print(f"Provider: {result.get('provider', '')}", file=out)
+    print(
+        f"Selected: {result.get('selected_count', 0)}, executed: {result.get('executed_count', 0)}, "
+        f"failed: {result.get('failed_count', 0)}",
+        file=out,
+    )
+    if result.get("executed"):
+        print("Executed:", file=out)
+        _print_proposal_items(result.get("executed", []), out)
+    if result.get("failed"):
+        print("Failed:", file=out)
+        _print_proposal_items(result.get("failed", []), out)
+
+
+def _print_audit(result: dict[str, Any], out: TextIO) -> None:
+    print(f"Count: {result.get('count', 0)}", file=out)
+    for index, item in enumerate(result.get("events", []), start=1):
+        print(
+            f"{index}. {item.get('event_id', '')} "
+            f"{item.get('event_type', '')} proposal={item.get('proposal_id', '')} "
+            f"actor={item.get('actor', '')}",
+            file=out,
+        )
 
 
 def _print_mutation_result(command: str, result: dict[str, Any], out: TextIO) -> None:

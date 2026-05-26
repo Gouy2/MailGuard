@@ -1,6 +1,6 @@
 # MailGuard 开发文档
 
-这些文档只保留继续开发需要的信息：当前能力、架构边界、测试入口、风险和下一步计划。历史阶段性说明不再展开。
+这些文档只保留继续开发需要的信息：当前能力、架构边界、测试入口和近期开发计划。历史阶段性规划已归档，不再作为当前路线依据。
 
 ## 当前基线
 
@@ -9,7 +9,8 @@
 - 主要入口：`server/email_cli.py`、`server/agent_cli.py`、`server/agent_smoke.py`。
 - 已验证：真实 QQ/Foxmail recent/detail/search/status/mailboxes、mark read、archive、star、create draft。
 - 已验证：agent read-only、pending approval、approve/reject、trace 查询。
-- 下一步：先做自然对话验收，再进入分类质量迭代和最小 UI。
+- 已验证：Action Proposal + Audit Log 首版。
+- 下一步：在 proposal/audit 基础上迭代 automation policy 和定时入口。
 
 ## 文档职责
 
@@ -17,9 +18,9 @@
 - [系统架构](./architecture.md)：runtime、tools、provider、state、安全边界。
 - [实现细节](./implementation-details.md)：非显而易见的不变量和已知限制。
 - [测试与评估](./testing-and-evaluation.md)：所有常用验证命令和验收标准。
-- [后续计划](./roadmap.md)：优先级、暂停项、结构优化项。
-- [开发接手指南](./development-handoff.md)：恢复上下文时先看的一页。
+- [当前开发计划](./current-development-plan.md)：项目定位、近期 M0/M1、Agent 取舍和验收边界。
 - [测试日志](./test-logs/README.md)：只保存关键验证快照。
+- [归档文档](./archive/)：旧路线和历史接手说明，仅作背景参考。
 
 ## 不变量
 

@@ -10,6 +10,7 @@ from email.message import EmailMessage as OutboundEmailMessage
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest.mock import patch
 
 from server.agent_cli import AgentHttpClient, run_cli as run_agent_cli
@@ -20,6 +21,7 @@ from server.app.agent import AgentRuntime
 from server.app.auth import configured_auth_token, require_api_token
 from server.app.email_eval import evaluate_email_classifier
 from server.app.email_provider import MockEmailProvider
+from server.app.email_proposals import approve_action_proposal, execute_approved_action_proposals
 from server.app.email_tools import classify_email
 from server.app.llm_email_classifier import _normalize_decision, _parse_json_object
 from server.app.memory import MemoryStore
@@ -187,6 +189,12 @@ class EmailToolRuntimeTests(unittest.TestCase):
         self.assertIn("email_notification_mark_read", names)
         self.assertIn("email_daily_digest", names)
         self.assertIn("email_scheduler_state", names)
+        self.assertIn("email_scan_proposals", names)
+        self.assertIn("email_list_proposals", names)
+        self.assertIn("email_approve_proposal", names)
+        self.assertIn("email_reject_proposal", names)
+        self.assertIn("email_execute_approved_proposals", names)
+        self.assertIn("email_audit_log", names)
         self.assertIn("email_provider_status", names)
         self.assertIn("email_list_mailboxes", names)
         self.assertIn("email_eval_mock", names)
@@ -646,6 +654,209 @@ class EmailToolRuntimeTests(unittest.TestCase):
         self.assertEqual("execution_error", result["error_type"])
         self.assertIn("docs/test-logs", result["error"])
 
+    def test_scan_proposals_creates_archive_candidates_and_skips_important(self) -> None:
+        response = self.runtime.execute_tool_for_test(
+            "email_scan_proposals",
+            {"limit": 12, "unread_only": False},
+            session_id="proposal-scan",
+        )
+
+        self.assertTrue(response["ok"])
+        result = response["result"]
+        proposal_ids = {item["email_id"] for item in result["proposals"]}
+        important_ids = {item["email_id"] for item in result["important"]}
+        self.assertIn("email-033", proposal_ids)
+        self.assertIn("email-029", proposal_ids)
+        self.assertIn("email-035", important_ids)
+        self.assertIn("email-034", important_ids)
+        self.assertEqual(result["proposal_count"], result["created_count"])
+
+        audit = self.runtime.execute_tool_for_test(
+            "email_audit_log",
+            {},
+            session_id="proposal-scan",
+        )
+        self.assertTrue(audit["ok"])
+        self.assertEqual(result["created_count"], audit["result"]["count"])
+        self.assertTrue(all(item["event_type"] == "proposal_created" for item in audit["result"]["events"]))
+
+    def test_large_proposal_scan_keeps_structured_result(self) -> None:
+        response = self.runtime.execute_tool_for_test(
+            "email_scan_proposals",
+            {"limit": 50, "unread_only": False},
+            session_id="proposal-large-scan",
+        )
+
+        self.assertTrue(response["ok"])
+        result = response["result"]
+        self.assertNotIn("truncated", result)
+        self.assertEqual(7, result["proposal_count"])
+        self.assertEqual(23, result["important_count"])
+        self.assertEqual(10, result["important_returned_count"])
+        self.assertLessEqual(result["important_returned_count"], result["important_count"])
+
+    def test_scan_proposals_deduplicates_repeated_scans(self) -> None:
+        first = self.runtime.execute_tool_for_test(
+            "email_scan_proposals",
+            {"limit": 12, "unread_only": False},
+            session_id="proposal-dedupe",
+        )
+        second = self.runtime.execute_tool_for_test(
+            "email_scan_proposals",
+            {"limit": 12, "unread_only": False},
+            session_id="proposal-dedupe",
+        )
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertGreater(first["result"]["created_count"], 0)
+        self.assertEqual(0, second["result"]["created_count"])
+        self.assertEqual(first["result"]["proposal_count"], second["result"]["duplicate_count"])
+
+        listed = self.runtime.execute_tool_for_test(
+            "email_list_proposals",
+            {},
+            session_id="proposal-dedupe",
+        )
+        self.assertEqual(first["result"]["proposal_count"], listed["result"]["count"])
+
+    def test_important_sender_preference_blocks_archive_proposal(self) -> None:
+        self.runtime.execute_tool_for_test(
+            "email_add_preference",
+            {"key": "important_senders", "value": "updates@learning.example"},
+            session_id="proposal-preference",
+        )
+
+        response = self.runtime.execute_tool_for_test(
+            "email_scan_proposals",
+            {"limit": 12, "unread_only": False},
+            session_id="proposal-preference",
+        )
+
+        self.assertTrue(response["ok"])
+        proposal_ids = {item["email_id"] for item in response["result"]["proposals"]}
+        important_ids = {item["email_id"] for item in response["result"]["important"]}
+        self.assertNotIn("email-033", proposal_ids)
+        self.assertIn("email-033", important_ids)
+
+    def test_approved_proposal_executes_archive_and_writes_audit(self) -> None:
+        scan = self.runtime.execute_tool_for_test(
+            "email_scan_proposals",
+            {"limit": 12, "unread_only": False},
+            session_id="proposal-execute",
+        )
+        proposal = next(item for item in scan["result"]["proposals"] if item["email_id"] == "email-033")
+
+        pending_approval = self.runtime.execute_tool_for_test(
+            "email_approve_proposal",
+            {"proposal_id": proposal["proposal_id"]},
+            session_id="proposal-execute",
+        )
+        before_user_approval = self.runtime.execute_tool_for_test(
+            "email_execute_approved_proposals",
+            {},
+            session_id="proposal-execute",
+        )
+        approved = self.runtime.approve_tool(pending_approval["pending_tool_call_id"])
+        executed = self.runtime.execute_tool_for_test(
+            "email_execute_approved_proposals",
+            {},
+            session_id="proposal-execute",
+        )
+
+        self.assertTrue(pending_approval["requires_approval"])
+        self.assertEqual(0, before_user_approval["result"]["executed_count"])
+        self.assertTrue(approved["ok"])
+        self.assertEqual("approved", approved["result"]["proposal"]["status"])
+        self.assertTrue(executed["ok"])
+        self.assertEqual(1, executed["result"]["executed_count"])
+
+        detail = self.runtime.execute_tool_for_test(
+            "email_get_detail",
+            {"email_id": "email-033"},
+            session_id="proposal-execute",
+        )
+        self.assertIn("archived", detail["result"]["email"]["labels"])
+
+        audit = self.runtime.execute_tool_for_test(
+            "email_audit_log",
+            {"proposal_id": proposal["proposal_id"]},
+            session_id="proposal-execute",
+        )
+        event_types = [item["event_type"] for item in audit["result"]["events"]]
+        self.assertEqual(
+            ["proposal_created", "proposal_approved", "execution_started", "execution_succeeded"],
+            event_types,
+        )
+
+    def test_rejected_proposal_does_not_execute(self) -> None:
+        scan = self.runtime.execute_tool_for_test(
+            "email_scan_proposals",
+            {"limit": 12, "unread_only": False},
+            session_id="proposal-reject",
+        )
+        proposal = next(item for item in scan["result"]["proposals"] if item["email_id"] == "email-029")
+
+        rejected = self.runtime.execute_tool_for_test(
+            "email_reject_proposal",
+            {"proposal_id": proposal["proposal_id"], "reason": "keep this sale"},
+            session_id="proposal-reject",
+        )
+        executed = self.runtime.execute_tool_for_test(
+            "email_execute_approved_proposals",
+            {},
+            session_id="proposal-reject",
+        )
+
+        self.assertTrue(rejected["ok"])
+        self.assertEqual("rejected", rejected["result"]["proposal"]["status"])
+        self.assertEqual(0, executed["result"]["executed_count"])
+
+        detail = self.runtime.execute_tool_for_test(
+            "email_get_detail",
+            {"email_id": "email-029"},
+            session_id="proposal-reject",
+        )
+        self.assertNotIn("archived", detail["result"]["email"]["labels"])
+
+    def test_failed_proposal_execution_writes_failed_status_and_audit(self) -> None:
+        class FailingArchiveProvider(MockEmailProvider):
+            def archive(self, email_id: str) -> dict[str, Any]:
+                raise RuntimeError("archive unavailable")
+
+        store = MemoryStore()
+        created = store.create_action_proposal_once(
+            "proposal-fail",
+            {
+                "action": "archive",
+                "email_id": "email-004",
+                "thread_id": "thread-004",
+                "subject": "This week in product design",
+                "from_email": "newsletter@designweekly.example",
+                "from_name": "Design Weekly",
+                "reason": "low-value mail",
+                "evidence": {"classification": {"category": "newsletter"}},
+            },
+        )
+        proposal = created["proposal"]
+        store.add_action_audit_event("proposal-fail", proposal["proposal_id"], "proposal_created", "policy", {})
+        approve_action_proposal(
+            memory_store=store,
+            session_id="proposal-fail",
+            proposal_id=proposal["proposal_id"],
+        )
+
+        result = execute_approved_action_proposals(
+            provider=FailingArchiveProvider(),
+            memory_store=store,
+            session_id="proposal-fail",
+        )
+
+        self.assertEqual(1, result["failed_count"])
+        self.assertEqual("failed", result["failed"][0]["status"])
+        self.assertIn("archive unavailable", result["failed"][0]["error"])
+        self.assertIn("execution_failed", [item["event_type"] for item in store.action_audit_events("proposal-fail")])
+
     def test_evaluation_can_record_classifier_errors(self) -> None:
         def failing_classifier(_email, _preferences):
             raise ValueError("bad model output")
@@ -855,6 +1066,95 @@ class EmailCliTests(unittest.TestCase):
         self.assertIn("Action required today", output)
         self.assertEqual("", stderr.getvalue())
         self.assertTrue(runtime.closed)
+
+    def test_proposal_commands_call_expected_tools(self) -> None:
+        runtime = FakeCliRuntime(
+            execute_results=[
+                {
+                    "ok": True,
+                    "tool": "email_scan_proposals",
+                    "result": {
+                        "provider": "MockEmailProvider",
+                        "fetched": 1,
+                        "proposal_count": 1,
+                        "created_count": 1,
+                        "duplicate_count": 0,
+                        "important_count": 0,
+                        "review_count": 0,
+                        "no_action_count": 0,
+                        "proposals": [
+                            {
+                                "proposal_id": "proposal-001",
+                                "status": "proposed",
+                                "risk_level": "low",
+                                "action": "archive",
+                                "email_id": "email-004",
+                                "from_name": "Design Weekly",
+                                "from_email": "newsletter@example.com",
+                                "subject": "Newsletter",
+                                "reason": "low-value mail",
+                            }
+                        ],
+                    },
+                }
+            ]
+        )
+        stdout = StringIO()
+
+        exit_code = run_cli(
+            ["propose", "--limit", "1", "--all"],
+            runtime_factory=lambda: runtime,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [("email_scan_proposals", {"limit": 1, "unread_only": False}, "email-cli")],
+            runtime.execute_calls,
+        )
+        self.assertIn("proposal-001", stdout.getvalue())
+
+    def test_approve_proposal_command_calls_expected_tool(self) -> None:
+        runtime = FakeCliRuntime(
+            execute_results=[
+                {
+                    "ok": False,
+                    "tool": "email_approve_proposal",
+                    "requires_approval": True,
+                    "pending_tool_call_id": "pending-approve",
+                    "reason": "dangerous tool requires explicit approval",
+                }
+            ],
+            approve_results={
+                "pending-approve": {
+                    "ok": True,
+                    "tool": "email_approve_proposal",
+                    "result": {
+                        "proposal": {
+                            "proposal_id": "proposal-001",
+                            "status": "approved",
+                            "email_id": "email-004",
+                        },
+                        "audit_event": {"event_type": "proposal_approved"},
+                    },
+                }
+            },
+        )
+
+        exit_code = run_cli(
+            ["approve-proposal", "proposal-001"],
+            runtime_factory=lambda: runtime,
+            stdout=StringIO(),
+            stderr=StringIO(),
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [("email_approve_proposal", {"proposal_id": "proposal-001"}, "email-cli")],
+            runtime.execute_calls,
+        )
+        self.assertEqual(["pending-approve"], runtime.approved)
 
     def test_dangerous_command_without_yes_rejects_pending_preview(self) -> None:
         runtime = FakeCliRuntime(
@@ -1587,6 +1887,53 @@ class SQLiteMemoryPersistenceTests(unittest.TestCase):
         self.assertEqual("read", state["notifications"][0]["status"])
         self.assertEqual("scan-test", state["scan_history"][0]["scan_id"])
         self.assertEqual(state["scan_history"][0]["created_at"], state["last_scan_at"])
+
+    def test_action_proposals_and_audit_persist_across_memory_store_instances(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "state.db"
+            first_store = SQLiteStateStore(db_path)
+            first = MemoryStore(state_store=first_store)
+            created = first.create_action_proposal_once(
+                "persist",
+                {
+                    "proposal_id": "proposal-test",
+                    "action": "archive",
+                    "email_id": "email-004",
+                    "thread_id": "thread-004",
+                    "subject": "Newsletter",
+                    "from_email": "newsletter@example.com",
+                    "from_name": "Newsletter",
+                    "reason": "low-value mail",
+                    "evidence": {"category": "newsletter"},
+                },
+            )
+            duplicate = first.create_action_proposal_once(
+                "persist",
+                {
+                    "proposal_id": "proposal-other",
+                    "action": "archive",
+                    "email_id": "email-004",
+                    "reason": "duplicate",
+                    "evidence": {},
+                },
+            )
+            first.add_action_audit_event("persist", created["proposal"]["proposal_id"], "proposal_created", "policy", {})
+            first.update_action_proposal("persist", created["proposal"]["proposal_id"], {"status": "approved"})
+            first_store.close()
+
+            second_store = SQLiteStateStore(db_path)
+            second = MemoryStore(state_store=second_store)
+            proposals = second.action_proposals("persist")
+            audit = second.action_audit_events("persist")
+            second_store.close()
+
+        self.assertTrue(created["created"])
+        self.assertFalse(duplicate["created"])
+        self.assertEqual(1, len(proposals))
+        self.assertEqual("proposal-test", proposals[0]["proposal_id"])
+        self.assertEqual("approved", proposals[0]["status"])
+        self.assertEqual(1, len(audit))
+        self.assertEqual("proposal_created", audit[0]["event_type"])
 
 
 class SQLiteRuntimePersistenceTests(unittest.TestCase):

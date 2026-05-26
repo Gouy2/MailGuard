@@ -13,13 +13,14 @@ FastAPI
         -> classifier / scheduler / eval
 ```
 
-当前是 headless-first。Mac 本地直接运行 server、CLI、smoke 和 tests；旧客户端暂不作为主验证链路。
+当前是 headless-first。Mac 本地直接运行 server、CLI、smoke 和 tests；旧桌宠客户端已从当前仓库移除。
 
 ## 关键模块
 
 - `server/app/agent.py`：SSE chat、OpenAI tool loop、manual tool execution、approval、trace。
 - `server/app/tools.py`：tool registry、schema validation、权限分级、pending approval、开发工具策略。
 - `server/app/email_tools.py`：邮件工具注册、规则分类器、偏好、scheduler、eval tool。
+- `server/app/email_proposals.py`：低风险 archive proposal policy、审批状态流转、approved execution、audit log。
 - `server/app/email_provider.py`：`EmailProvider` 协议和 `MockEmailProvider`。
 - `server/app/qq_imap_provider.py`：QQ/Foxmail IMAP 读写实现。
 - `server/app/memory.py` / `server/app/sqlite_state.py`：进程内状态和可选 SQLite。
@@ -114,6 +115,8 @@ QQ/Foxmail 写操作：
 - reported email ids
 - notifications
 - scan history
+- action proposals
+- action audit events
 
 不持久化：
 

@@ -1,6 +1,8 @@
 # 项目总览
 
-MailGuard 是一个本地邮件分拣 Agent。当前目标是稳定真实 QQ/Foxmail 邮箱接入、agent tool-use、安全审批边界和分类评估闭环，而不是先做通用聊天或复杂 UI。
+MailGuard 是一个本地优先的邮件管理 Agent。当前目标是把现有 tool calling、真实 QQ/Foxmail 接入和审批边界升级为安全可审计的邮件自动化闭环，而不是先做通用聊天、复杂 UI 或旧桌宠体验。
+
+近期执行计划以 [当前开发计划](./current-development-plan.md) 为准。
 
 ## 当前能力
 
@@ -27,12 +29,13 @@ Triage：
 - deterministic rule classifier。
 - 结构化偏好：important / ignored sender、domain、category，report schedule，timezone。
 - headless scheduler、notification outbox、digest、去重。
+- Action Proposal + Audit Log：低风险 archive proposal、审批/拒绝、approved execution、失败审计。
 - mock eval、LLM shadow eval、real mailbox manual label/eval。
 - opt-in SQLite persistence：preferences、reported ids、notifications、scan history。
 
 ## 已验证
 
-- 自动化回归：`69 tests OK (1 skipped when FastAPI is unavailable in root python)`。
+- 自动化回归：`78 tests OK (1 skipped when FastAPI is unavailable in root python)`。
 - 编译检查通过。
 - Mock agent smoke：read tool、多步 tool-use、approve/reject。
 - Live LLM mock-provider smoke：真实 LLM 能调用邮件读工具，不触碰真实邮箱。
@@ -48,6 +51,7 @@ Triage：
 - 其他邮箱 provider。
 - 后台常驻调度。
 - 复杂 UI。
+- 旧桌宠客户端和复杂桌面交互；legacy `client/` 已从当前仓库移除。
 - 持久化 pending approval。
 - 持久化 chat history。
 - 持久化真实邮件正文。
@@ -55,7 +59,7 @@ Triage：
 
 ## 风险和技术债
 
-- 自然语言对话还需要人工验收：先只读，再 pending/reject，最后才在专门测试邮件上 approve。
+- 当前 Action Proposal 只支持 `archive`，还没有 automation policy、定时后台入口或前端操作台。
 - 真实邮箱分类质量仍依赖人工标签样本；规则 baseline 有 mock 过拟合风险。
 - `agent_smoke.py` 已经混合 deterministic mock、live LLM、real read-only、real pending-write，多继续扩展会影响可读性。
 - `email_tools.py` 和 `email_cli.py` 体积较大，后续可以按 classifier、tool registration、eval、CLI presenter 拆分。
