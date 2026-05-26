@@ -148,11 +148,13 @@ email_scan_proposals
 - `report_schedule`
 - `timezone`
 
-后续 memory 分三层：
+Memory 分三层：
 
 - `observed_memory`：从 label / approve / reject / execute / manual archive 自动累计的行为统计。
 - `confirmed_memory`：用户确认过的偏好。
 - `automation_policy`：用户明确授权的自动化规则。
+
+当前已有只读 `observed-memory` CLI，从 proposal/candidate 标签中归纳 sender/domain/category 的 archive/keep 倾向，并输出 observed-only proposed preferences；它不会自动写入偏好或改变策略。
 
 LLM 可以读取 memory，policy 也可以读取 memory；但只有 `automation_policy` 能支撑未来自动执行。自然语言偏好抽取先生成 `proposed_memory_update`，确认后才进入 `confirmed_memory`。
 

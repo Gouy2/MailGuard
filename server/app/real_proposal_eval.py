@@ -59,6 +59,10 @@ def save_real_proposal_label(
         "action": str(proposal.get("action", "")),
         "risk_level": str(proposal.get("risk_level", "")),
         "source": str(proposal.get("source", "")),
+        "category": str(proposal.get("category", "")),
+        "importance": str(proposal.get("importance", "")),
+        "suggested_action": str(proposal.get("suggested_action", "")),
+        "policy_decision": str(proposal.get("policy_decision", "")),
         "subject": str(proposal.get("subject", "")).strip(),
         "from_email": str(proposal.get("from_email", "")).strip(),
         "from_name": str(proposal.get("from_name", "")).strip(),
@@ -90,32 +94,30 @@ def evaluate_real_proposal_labels(label_data: dict[str, Any]) -> dict[str, Any]:
                 "label": label,
                 "action": str(raw_record.get("action", "")),
                 "risk_level": str(raw_record.get("risk_level", "")),
+                "source": str(raw_record.get("source", "")),
+                "category": str(raw_record.get("category", "")),
+                "importance": str(raw_record.get("importance", "")),
+                "suggested_action": str(raw_record.get("suggested_action", "")),
+                "policy_decision": str(raw_record.get("policy_decision", "")),
                 "subject": str(raw_record.get("subject", "")),
                 "from_email": str(raw_record.get("from_email", "")),
+                "from_name": str(raw_record.get("from_name", "")),
                 "reason": str(raw_record.get("reason", "")),
                 "note": str(raw_record.get("note", "")),
                 "labeled_at": str(raw_record.get("labeled_at", "")),
             }
         )
 
-    label_counts = Counter(row["label"] for row in rows)
-    decisive = [row for row in rows if row["label"] in {"archive", "keep"}]
-    accepted = [row for row in rows if row["label"] == "archive"]
-    rejected = [row for row in rows if row["label"] == "keep"]
-    unsure = [row for row in rows if row["label"] == "unsure"]
+    summary = _label_summary(rows)
+    by_item_type = {
+        item_type: _label_summary([row for row in rows if row["item_type"] == item_type])
+        for item_type in sorted({row["item_type"] for row in rows})
+    }
 
     return {
         "schema_version": int(label_data.get("schema_version", REAL_PROPOSAL_LABEL_SCHEMA_VERSION)),
-        "sample_count": len(rows),
-        "decisive_count": len(decisive),
-        "label_counts": dict(sorted(label_counts.items())),
-        "metrics": {
-            "archive_acceptance_precision": _ratio(len(accepted), len(decisive)),
-            "false_positive_count": len(rejected),
-            "unsure_count": len(unsure),
-        },
-        "false_positive_proposals": rejected,
-        "unsure_proposals": unsure,
+        **summary,
+        "by_item_type": by_item_type,
         "rows": rows,
     }
 
@@ -143,6 +145,26 @@ def normalize_proposal_label(label: str) -> str:
     if normalized not in SUPPORTED_PROPOSAL_LABELS:
         raise ValueError("label must be one of: archive, keep, unsure")
     return normalized
+
+
+def _label_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    label_counts = Counter(row["label"] for row in rows)
+    decisive = [row for row in rows if row["label"] in {"archive", "keep"}]
+    accepted = [row for row in rows if row["label"] == "archive"]
+    rejected = [row for row in rows if row["label"] == "keep"]
+    unsure = [row for row in rows if row["label"] == "unsure"]
+    return {
+        "sample_count": len(rows),
+        "decisive_count": len(decisive),
+        "label_counts": dict(sorted(label_counts.items())),
+        "metrics": {
+            "archive_acceptance_precision": _ratio(len(accepted), len(decisive)),
+            "false_positive_count": len(rejected),
+            "unsure_count": len(unsure),
+        },
+        "false_positive_proposals": rejected,
+        "unsure_proposals": unsure,
+    }
 
 
 def _ratio(numerator: int, denominator: int) -> float:

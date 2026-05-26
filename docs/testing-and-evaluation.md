@@ -13,7 +13,7 @@ python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.
 当前基线：
 
 ```text
-86 tests OK (1 skipped when FastAPI is unavailable in root python)
+89 tests OK (1 skipped when FastAPI is unavailable in root python)
 py_compile passed
 ```
 
@@ -23,7 +23,7 @@ py_compile passed
 - `tests/test_email_tool_runtime.py`：tool registry、approval、readonly、scheduler、proposal、eval。
 - `tests/test_email_cli.py`：email CLI 展示、approval preview、真实标签保存。
 - `tests/test_agent_cli.py`：HTTP/SSE agent CLI、pending、approve/reject、trace、auth header。
-- `tests/test_real_eval_helpers.py`：真实邮箱标签和 proposal/candidate 标签指标。
+- `tests/test_real_eval_helpers.py`：真实邮箱标签、proposal/candidate 标签指标和 observed memory insights。
 - `tests/test_sqlite_persistence.py`：SQLite notification、preferences、scheduler、proposal/audit 持久化。
 - `tests/test_auth_provider_tools.py`：auth、dev tools、provider factory。
 - `tests/test_qq_imap_provider.py`：QQ/Foxmail IMAP provider。
@@ -293,14 +293,16 @@ server/data/real_email_labels.json
 
 目标是在不执行真实归档的前提下，评估真实邮箱 archive proposal 的可接受度，并收集 candidate 中哪些邮件未来可以提升为 proposal。
 
-执行前提醒：这是一次真实 QQ/Foxmail 只读审核测试。可以运行 `review-proposals`、`proposal-labels`、`eval-real-proposals`；不要运行 `approve-proposal` 或 `execute-approved`。
+执行前提醒：这是一次真实 QQ/Foxmail 只读审核测试。可以运行 `review-proposals`、`proposal-labels`、`eval-real-proposals`、`observed-memory`；不要运行 `approve-proposal` 或 `execute-approved`。
 
 ```bash
 cd server
 export MAILGUARD_STATE_DB=data/mailguard_state.db
 uv run python email_cli.py review-proposals --limit 20 --unread --label
+uv run python email_cli.py review-proposals --limit 20 --unread --show-protected
 uv run python email_cli.py proposal-labels
 uv run python email_cli.py eval-real-proposals
+uv run python email_cli.py observed-memory --min-samples 1
 ```
 
 标签：
@@ -311,13 +313,17 @@ uv run python email_cli.py eval-real-proposals
 - `s` / `skip`：跳过。
 - `q` / `quit`：退出。
 
+`--show-protected` 只用于检查 protected 是否合理，不会把 protected 纳入交互标注。
+
+`observed-memory` 只从本地标签文件归纳 observed-only signals，例如 archive-friendly sender/domain/category；它不会修改邮箱、不会修改偏好，也不会改变 proposal policy。
+
 默认标签文件：
 
 ```text
 server/data/real_proposal_labels.json
 ```
 
-该文件只保存 proposal/candidate id、email id、subject、from、reason 和人工标签，不保存正文；但仍包含真实邮箱元数据，不能提交。
+该文件只保存 proposal/candidate id、email id、subject、from、reason、分类摘要和人工标签，不保存正文；但仍包含真实邮箱元数据，不能提交。
 
 ## 记录原则
 

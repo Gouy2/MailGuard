@@ -45,6 +45,7 @@ Policy + Memory + User Permission: authorize
   - `confirmed_memory`：用户明确确认的偏好，例如 protected sender/domain、archive-friendly sender/domain。
   - `automation_policy`：用户明确授权的自动化规则，未来才可能支持 auto approve/execute。
 - 理由：Memory 不应只是塞进 LLM prompt 的自由文本；它必须同时服务 LLM 和 deterministic policy，并且可审计、可撤销、可测试。
+- 当前状态：已实现只读 observed memory report，从 proposal/candidate 标签中输出 observed-only proposed preferences。
 - 约束：自然语言偏好抽取先生成 `proposed_memory_update`，用户确认后才进入 `confirmed_memory`。
 
 ## 2026-05-26 - 真实写操作必须可追溯

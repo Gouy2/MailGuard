@@ -214,6 +214,53 @@ class EmailCliTests(unittest.TestCase):
         )
         self.assertIn("proposal-001", stdout.getvalue())
 
+    def test_review_proposals_can_show_protected_items(self) -> None:
+        runtime = FakeCliRuntime(
+            execute_results=[
+                {
+                    "ok": True,
+                    "tool": "email_scan_proposals",
+                    "result": {
+                        "provider": "MockEmailProvider",
+                        "fetched": 1,
+                        "proposal_count": 0,
+                        "created_count": 0,
+                        "duplicate_count": 0,
+                        "protected_count": 1,
+                        "candidate_count": 0,
+                        "no_action_count": 0,
+                        "proposals": [],
+                        "protected": [
+                            {
+                                "email_id": "email-035",
+                                "from_name": "Domain Registrar",
+                                "from_email": "billing@domains.example",
+                                "subject": "Domain renewal invoice due tomorrow",
+                                "category": "finance",
+                                "importance": "high",
+                                "suggested_action": "review",
+                                "policy_reason": "protected category or reportable mail",
+                            }
+                        ],
+                    },
+                }
+            ]
+        )
+        stdout = StringIO()
+
+        exit_code = run_cli(
+            ["review-proposals", "--limit", "1", "--all", "--show-protected"],
+            runtime_factory=lambda: runtime,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+
+        self.assertEqual(0, exit_code)
+        output = stdout.getvalue()
+        self.assertIn("Protected:", output)
+        self.assertIn("email-035 [high/finance/review]", output)
+        self.assertIn("protected category or reportable mail", output)
+
     def test_approve_proposal_command_calls_expected_tool(self) -> None:
         runtime = FakeCliRuntime(
             execute_results=[
@@ -407,6 +454,52 @@ class EmailCliTests(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn("archive_acceptance_precision: 0.5", output)
         self.assertIn("false_positive_count: 1", output)
+
+    def test_observed_memory_command_prints_insights_without_runtime_tools(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            labels_path = Path(temp_dir) / "real_proposal_labels.json"
+            save_real_proposal_label(
+                labels_path,
+                proposal={
+                    "candidate_id": "candidate-001",
+                    "item_type": "candidate",
+                    "email_id": "email-031",
+                    "from_email": "notification@facebookmail.example",
+                    "subject": "Facebook notification",
+                    "category": "notification",
+                    "action": "archive",
+                },
+                label="archive",
+            )
+            save_real_proposal_label(
+                labels_path,
+                proposal={
+                    "candidate_id": "candidate-002",
+                    "item_type": "candidate",
+                    "email_id": "email-032",
+                    "from_email": "notification@facebookmail.example",
+                    "subject": "Another Facebook notification",
+                    "category": "notification",
+                    "action": "archive",
+                },
+                label="archive",
+            )
+            runtime = FakeCliRuntime([])
+            stdout = StringIO()
+
+            exit_code = run_cli(
+                ["observed-memory", "--labels-path", str(labels_path), "--min-samples", "2"],
+                runtime_factory=lambda: runtime,
+                stdout=stdout,
+                stderr=StringIO(),
+            )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual([], runtime.execute_calls)
+        output = stdout.getvalue()
+        self.assertIn("Mailbox mutation: False", output)
+        self.assertIn("archive_friendly sender=notification@facebookmail.example", output)
+        self.assertIn("archive_sender=notification@facebookmail.example", output)
 
     def test_dangerous_command_without_yes_rejects_pending_preview(self) -> None:
         runtime = FakeCliRuntime(

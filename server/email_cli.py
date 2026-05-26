@@ -15,6 +15,7 @@ if __package__ in {None, ""}:  # pragma: no cover - runtime path bootstrap for s
 
 try:
     from app.agent import AgentRuntime
+    from app.observed_memory import build_observed_memory_report
     from app.real_proposal_eval import (
         evaluate_real_proposal_labels,
         load_real_proposal_labels,
@@ -26,6 +27,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - used when imported from
     if exc.name != "app":
         raise
     from server.app.agent import AgentRuntime
+    from server.app.observed_memory import build_observed_memory_report
     from server.app.real_proposal_eval import (
         evaluate_real_proposal_labels,
         load_real_proposal_labels,
@@ -149,6 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     propose.add_argument("--limit", type=int, default=20)
     propose.add_argument("--unread", action="store_true", help="Only scan unread emails.")
     propose.add_argument("--all", action="store_true", help="Scan all recent mail instead of unread only.")
+    propose.add_argument("--show-protected", action="store_true", help="Print protected items for policy review.")
     propose.set_defaults(func=_cmd_propose, display_command="propose")
 
     review_proposals = subparsers.add_parser(
@@ -158,6 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     review_proposals.add_argument("--limit", type=int, default=20)
     review_proposals.add_argument("--unread", action="store_true", help="Only scan unread emails.")
     review_proposals.add_argument("--all", action="store_true", help="Scan all recent mail instead of unread only.")
+    review_proposals.add_argument("--show-protected", action="store_true", help="Print protected items for policy review.")
     review_proposals.add_argument("--label", action="store_true", help="Interactively label returned proposals.")
     review_proposals.add_argument("--labels-path", default=str(DEFAULT_REAL_PROPOSAL_LABEL_PATH))
     review_proposals.set_defaults(func=_cmd_review_proposals, display_command="review-proposals")
@@ -184,6 +188,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     eval_real_proposals.add_argument("--labels-path", default=str(DEFAULT_REAL_PROPOSAL_LABEL_PATH))
     eval_real_proposals.set_defaults(func=_cmd_eval_real_proposals, display_command="eval-real-proposals")
+
+    observed_memory = subparsers.add_parser(
+        "observed-memory",
+        aliases=["memory-insights"],
+        help="Summarize observed memory signals from local proposal/candidate labels. Read-only.",
+    )
+    observed_memory.add_argument("--labels-path", default=str(DEFAULT_REAL_PROPOSAL_LABEL_PATH))
+    observed_memory.add_argument("--min-samples", type=int, default=1)
+    observed_memory.add_argument("--limit", type=int, default=20)
+    observed_memory.set_defaults(func=_cmd_observed_memory, display_command="observed-memory")
 
     approve_proposal = subparsers.add_parser("approve-proposal", help="Approve one action proposal.")
     approve_proposal.add_argument("proposal_id")
@@ -564,6 +578,20 @@ def _cmd_eval_real_proposals(args: argparse.Namespace, runtime: Any) -> dict[str
     }
 
 
+def _cmd_observed_memory(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    data = load_real_proposal_labels(args.labels_path)
+    report = build_observed_memory_report(data, min_samples=args.min_samples)
+    return {
+        "ok": True,
+        "tool": "email_observed_memory",
+        "result": {
+            "labels_path": str(Path(args.labels_path)),
+            "limit": max(1, int(args.limit)),
+            "report": report,
+        },
+    }
+
+
 def _cmd_approve_proposal(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
     return _execute_dangerous_tool(
         runtime,
@@ -730,9 +758,9 @@ def _print_human(args: argparse.Namespace, result: dict[str, Any], *, stdout: Te
     elif command == "notifications":
         _print_notifications(result["result"], stdout)
     elif command == "propose":
-        _print_propose(result["result"], stdout)
+        _print_propose(result["result"], stdout, show_protected=args.show_protected)
     elif command == "review-proposals":
-        _print_propose(result["result"], stdout)
+        _print_propose(result["result"], stdout, show_protected=args.show_protected)
         _print_proposal_label_help(result["result"], stdout)
         if result["result"].get("interactive_labeling"):
             _run_interactive_proposal_labeling(args, result["result"], stdout=stdout)
@@ -744,6 +772,8 @@ def _print_human(args: argparse.Namespace, result: dict[str, Any], *, stdout: Te
         _print_proposal_labels(result["result"], stdout)
     elif command == "eval-real-proposals":
         _print_eval_real_proposals(result["result"], stdout)
+    elif command == "observed-memory":
+        _print_observed_memory(result["result"], stdout)
     elif command in {"approve-proposal", "reject-proposal"}:
         _print_proposal_decision(command, result["result"], stdout)
     elif command == "execute-approved":
@@ -1118,7 +1148,7 @@ def _print_notifications(result: dict[str, Any], out: TextIO) -> None:
         print(f"   Action: {item.get('suggested_action', '')}", file=out)
 
 
-def _print_propose(result: dict[str, Any], out: TextIO) -> None:
+def _print_propose(result: dict[str, Any], out: TextIO, *, show_protected: bool = False) -> None:
     print(f"Provider: {result.get('provider', '')}", file=out)
     print(
         f"Fetched: {result.get('fetched', 0)}, proposals: {result.get('proposal_count', 0)}, "
@@ -1137,6 +1167,9 @@ def _print_propose(result: dict[str, Any], out: TextIO) -> None:
     if result.get("candidates"):
         print("Candidates:", file=out)
         _print_proposal_items(result.get("candidates", []), out)
+    if show_protected and result.get("protected"):
+        print("Protected:", file=out)
+        _print_protected_items(result.get("protected", []), out)
 
 
 def _print_proposals(result: dict[str, Any], out: TextIO) -> None:
@@ -1168,6 +1201,19 @@ def _print_proposal_items(proposals: list[dict[str, Any]], out: TextIO) -> None:
         print(f"   Subject: {_clip(item.get('subject', ''), 140)}", file=out)
         if item.get("reason"):
             print(f"   Reason: {_clip(item.get('reason', ''), 220)}", file=out)
+
+
+def _print_protected_items(items: list[dict[str, Any]], out: TextIO) -> None:
+    for index, item in enumerate(items, start=1):
+        print(
+            f"{index}. {item.get('email_id', '')} "
+            f"[{item.get('importance', '')}/{item.get('category', '')}/{item.get('suggested_action', '')}]",
+            file=out,
+        )
+        print(f"   From: {_format_sender(item)}", file=out)
+        print(f"   Subject: {_clip(item.get('subject', ''), 140)}", file=out)
+        if item.get("policy_reason"):
+            print(f"   Policy: {_clip(item.get('policy_reason', ''), 220)}", file=out)
 
 
 def _print_proposal_label(result: dict[str, Any], out: TextIO) -> None:
@@ -1203,10 +1249,62 @@ def _print_eval_real_proposals(result: dict[str, Any], out: TextIO) -> None:
     print(f"Label counts: {evaluation.get('label_counts', {})}", file=out)
     for key in sorted(metrics):
         print(f"{key}: {metrics[key]}", file=out)
+    for item_type, summary in sorted((evaluation.get("by_item_type") or {}).items()):
+        item_metrics = summary.get("metrics", {})
+        print(
+            f"{item_type}: sample={summary.get('sample_count', 0)}, "
+            f"decisive={summary.get('decisive_count', 0)}, "
+            f"labels={summary.get('label_counts', {})}, "
+            f"archive_acceptance_precision={item_metrics.get('archive_acceptance_precision', 0.0)}",
+            file=out,
+        )
     false_positives = evaluation.get("false_positive_proposals", [])
     print(f"False positive proposals: {len(false_positives)}", file=out)
     for item in false_positives:
         print(f"- {_proposal_item_id(item)}: {_clip(item.get('subject', ''), 140)}", file=out)
+
+
+def _print_observed_memory(result: dict[str, Any], out: TextIO) -> None:
+    report = result.get("report", {})
+    limit = max(1, int(result.get("limit", 20)))
+    print(f"Labels file: {result.get('labels_path', '')}", file=out)
+    print(
+        f"Samples: {report.get('sample_count', 0)}, decisive: {report.get('decisive_count', 0)}, "
+        f"labels: {report.get('label_counts', {})}",
+        file=out,
+    )
+    print(f"Mailbox mutation: {bool(report.get('mailbox_mutation', False))}", file=out)
+
+    insights = list(report.get("insights", []))
+    print(f"Insights: {len(insights)}", file=out)
+    for index, insight in enumerate(insights[:limit], start=1):
+        print(
+            f"{index}. {insight.get('kind', '')} "
+            f"{insight.get('group_type', '')}={insight.get('key', '')} "
+            f"archive={insight.get('archive_count', 0)}/{insight.get('sample_count', 0)} "
+            f"keep={insight.get('keep_count', 0)} "
+            f"rate={insight.get('archive_rate', 0.0)} "
+            f"confidence={insight.get('confidence', '')}",
+            file=out,
+        )
+        examples = insight.get("examples", [])
+        for example in examples[:2]:
+            print(
+                f"   - {example.get('item_type', '')} {example.get('label', '')}: "
+                f"{_clip(example.get('subject', ''), 120)}",
+                file=out,
+            )
+
+    proposed = list(report.get("proposed_preferences", []))
+    print(f"Proposed preferences: {len(proposed)} (observed only, not applied)", file=out)
+    for item in proposed[:limit]:
+        print(
+            f"- {item.get('proposal', '')}={item.get('value', '')} "
+            f"confidence={item.get('confidence', '')} "
+            f"samples={item.get('sample_count', 0)} "
+            f"archive_rate={item.get('archive_rate', 0.0)}",
+            file=out,
+        )
 
 
 def _print_proposal_decision(command: str, result: dict[str, Any], out: TextIO) -> None:

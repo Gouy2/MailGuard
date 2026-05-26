@@ -2,7 +2,6 @@
 
 MailGuard 是一个本地优先的邮件管理 Agent 原型。它会读取和分类邮箱邮件，提出低风险清理建议，并把所有真实邮箱写操作放在用户审批和审计日志之后。
 
-
 ## 核心能力
 
 - FastAPI + SSE Agent runtime，支持 OpenAI tool calling。
@@ -11,7 +10,7 @@ MailGuard 是一个本地优先的邮件管理 Agent 原型。它会读取和分
 - QQ/Foxmail IMAP provider：recent、detail、search、status、mailboxes，以及审批后的 mark-read、archive、star、draft。
 - 归档决策分层：`protected`、`candidate`、`proposal`，并为未来 `auto_eligible` 留出空间。
 - Action Proposal + Audit Log：记录 proposal 创建、审批、拒绝、执行和失败。
-- Mock eval、真实邮箱标签评估、proposal/candidate 标签评估、LLM shadow eval。
+- Mock eval、真实邮箱标签评估、proposal/candidate 标签评估、observed memory insights、LLM shadow eval。
 
 ## 安全边界
 
@@ -50,6 +49,7 @@ uv run uvicorn app.main:app --reload
 cd server
 uv run python email_cli.py review-proposals --limit 20 --unread --label
 uv run python email_cli.py eval-real-proposals
+uv run python email_cli.py observed-memory
 ```
 
 ## 文档

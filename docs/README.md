@@ -7,8 +7,8 @@
 - 开发方式：Mac 本地、server-first。
 - 真实邮箱：个人 QQ/Foxmail IMAP。
 - 主要入口：`server/email_cli.py`、`server/agent_cli.py`、`server/agent_smoke.py`。
-- 当前自动化基线：86 tests OK，1 skipped。
-- 近期重点：真实 proposal/candidate 标注、observed memory。
+- 当前自动化基线：89 tests OK，1 skipped。
+- 近期重点：真实 proposal/candidate 标注、observed memory 校验。
 
 ## 文档职责
 

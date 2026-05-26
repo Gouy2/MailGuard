@@ -408,6 +408,9 @@ def _candidate_item(
 
 
 def _proposal_summary(proposal: dict[str, Any]) -> dict[str, Any]:
+    evidence = dict(proposal.get("evidence") or {})
+    classification = dict(evidence.get("classification") or {})
+    policy = dict(evidence.get("policy") or {})
     return {
         "proposal_id": proposal.get("proposal_id", ""),
         "item_type": "proposal",
@@ -420,12 +423,11 @@ def _proposal_summary(proposal: dict[str, Any]) -> dict[str, Any]:
         "subject": proposal.get("subject", ""),
         "from_email": proposal.get("from_email", ""),
         "from_name": proposal.get("from_name", ""),
+        "category": classification.get("category", ""),
+        "importance": classification.get("importance", ""),
+        "suggested_action": classification.get("suggested_action", ""),
+        "policy_decision": policy.get("decision", ""),
         "reason": proposal.get("reason", ""),
-        "created_at": proposal.get("created_at", ""),
-        "updated_at": proposal.get("updated_at", ""),
-        "decided_at": proposal.get("decided_at", ""),
-        "executed_at": proposal.get("executed_at", ""),
-        "error": proposal.get("error", ""),
     }
 
 

@@ -27,21 +27,23 @@ scan/search
 - 结构化偏好、scheduler、notification、digest、SQLite state。
 - Action Proposal + Audit Log：低风险 archive proposal、审批/拒绝、approved execution、失败审计。
 - Deterministic candidate expansion：proposal scan 已输出 `protected` / `candidate` / `proposal` / `no_action`，其中 candidate 只用于学习和人工标注。
+- Observed memory report：从 proposal/candidate 标签中只读归纳 sender/domain/category 的 archive/keep 倾向，并输出 observed-only proposed preferences。
 - Mock classifier eval、proposal policy eval、real email label/eval、real proposal label/eval、LLM shadow eval。
 
 ## 进行中
 
-当前准备进入真实邮箱只读标注：
+当前准备进入真实邮箱只读标注和 observed memory 校验：
 
 - 用 `review-proposals --label` 同时标注 candidate 和 proposal。
-- 根据真实标签观察 candidate 召回、proposal precision 和误伤样本。
+- 用 `review-proposals --show-protected` 抽查 protected 是否过度保护。
+- 用 `observed-memory` 检查标签是否能归纳出合理的 sender/domain/category 倾向。
 - 测试已拆分为按领域命名的多个模块；后续新增测试应优先放入对应模块。
 
 ## 下一步
 
-1. 对真实邮箱执行只读 candidate/proposal 人工标注，收集可归档样本和误伤样本。
-2. 从 label/approve/reject/execute/manual archive 中累计 `observed_memory`。
-3. 再设计 `confirmed_memory` / `proposed_memory_update`。
+1. 对真实邮箱执行只读 candidate/proposal 人工标注，并抽查 protected，收集可归档样本和误伤样本。
+2. 用 `observed-memory` 验证 observed-only signals，判断哪些可以进入 `proposed_memory_update`。
+3. 设计 `confirmed_memory` / `proposed_memory_update` 的确认和撤销流程。
 4. 最后引入 LLM suitability scorer，让它读取 memory，但不越过 policy。
 5. 继续按领域维护测试，避免重新形成单文件堆积。
 
@@ -61,7 +63,7 @@ scan/search
 ## 验证基线
 
 - `python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py`：通过。
-- `python3 -m unittest tests.test_email_tools`：86 tests OK，1 skipped。
-- `python3 -m unittest discover -s tests -p 'test*.py'`：86 tests OK，1 skipped。
+- `python3 -m unittest tests.test_email_tools`：89 tests OK，1 skipped。
+- `python3 -m unittest discover -s tests -p 'test*.py'`：89 tests OK，1 skipped。
 - `python3 server/email_cli.py eval-proposals --limit 36`：mock proposal policy precision 1.0，recall 0.5385，false positive 0。
 - `python3 server/email_cli.py review-proposals --limit 12 --all`：mock scan 输出 3 proposals、2 candidates、7 protected、0 no action。
