@@ -10,8 +10,8 @@
 
 当前验证快照：
 
-- `python3 -m unittest discover -s tests -p 'test*.py'`：101 tests OK (1 skipped when FastAPI is unavailable in root python)。
-- `python3 -m unittest tests.test_email_tools`：兼容入口仍可加载拆分后的 101 tests，OK (1 skipped when FastAPI is unavailable in root python)。
+- `python3 -m unittest discover -s tests -p 'test*.py'`：104 tests OK (1 skipped when FastAPI is unavailable in root python)。
+- `python3 -m unittest tests.test_email_tools`：兼容入口仍可加载拆分后的 104 tests，OK (1 skipped when FastAPI is unavailable in root python)。
 - `python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py`：通过。
 - `python3 server/agent_smoke.py`：deterministic mock agent smoke 通过。
 - `cd server && uv run python agent_smoke.py --live`：live LLM mock-provider smoke 通过；模型调用了 `email_report_important`、`email_get_preferences` 和多次 `email_get_detail`，turn status 为 `ok`，未触碰真实邮箱。
@@ -21,7 +21,7 @@
 - Action Proposal + Audit Log 回归通过：覆盖低风险 archive proposal、protected/candidate 分层、candidate 本地标注、去重、important sender 阻断、approve/reject、approved execution、failed execution audit、SQLite 持久化和 CLI 命令路由。
 - `python3 server/email_cli.py eval-proposals --limit 36`：proposal policy eval 通过；mock baseline 为 precision 1.0、recall 0.5385、false_positive_count 0。
 - `python3 server/email_cli.py review-proposals --limit 12 --all`：mock scan 输出 3 proposals、2 candidates、7 protected、0 no action。
-- Real proposal/candidate label/eval 回归通过：覆盖 `review-proposals --label` 本地标签保存、`eval-real-proposals` precision/false positive 统计、`observed-memory` 只读信号归纳、`memory-proposals` 本地确认流程，以及 confirmed sender/domain memory 对 proposal scan 的保守 promotion。
+- Real proposal/candidate label/eval 回归通过：覆盖 `review-proposals --label` 本地标签保存、CLI workflow presets、`eval-real-proposals` precision/false positive 统计、`observed-memory` 只读信号归纳、`memory-proposals` 本地确认流程，以及 confirmed sender/domain memory 对 proposal scan 的保守 promotion。
 - LLM archive shadow 回归通过：覆盖 proposal/candidate 标签保存 snippet、shadow input 不含邮件 body、本地 shadow result 保存、默认不触发 `email_get_detail`、缓存跳过、dry-run 输入诊断、逐项进度、latency 汇总，以及 `eval-archive-shadow` 与真实标签对齐计算指标和 readiness gate。
 - 用户已完成初轮真实 QQ/Foxmail 只读 proposal/candidate 审核：9 decisive labels 全部为 archive，false_positive_count 0；protected 抽查基本合理，未执行邮箱写操作。
 - QQ/Foxmail recent/detail/search、mark read、archive、star、create draft 已完成本地手测。

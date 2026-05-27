@@ -12,6 +12,17 @@ dependencies = [
     "pydantic>=2.0.0",
 ]
 
+[project.scripts]
+mailguard = "email_cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["agent_cli", "agent_smoke", "email_cli", "evaluate_email"]
+packages = ["app"]
+
 [project.optional-dependencies]
 memory = [
     "sentence-transformers>=3.0.0",

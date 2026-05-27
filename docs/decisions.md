@@ -79,6 +79,13 @@ Policy + Memory + User Permission: authorize
 - 理由：automation preview 需要复用同一套 policy，但不能触发 proposal 创建和 audit 副作用；先拆领域边界，避免继续把新功能叠到带副作用的 scan 上。
 - 约束：本次保持 CLI/API 外部行为兼容，不改 proposal 状态机，不引入自动执行。
 
+## 2026-05-27 - CLI presets 只做体验层，不改变语义
+
+- 决策：新增 `mailguard` console script 和 workflow presets，例如 `archive-review`、`protected`、`memory`、`shadow`。
+- 理由：当前 CLI 是真实测试阶段的临时前端，长命令会降低测试频率；presets 能降低操作负担，同时不引入新行为层。
+- 约束：presets 在 argparse 解析前展开为既有长命令；原命令保持兼容；真实邮箱写操作不提供危险短命令。
+- 约束：现有 `review` / `labels` 保留给 real email label workflow，archive proposal/candidate 使用 `archive-review` / `archive-labels`，避免悄悄改旧语义。
+
 ## 2026-05-26 - 文档瘦身
 
 - 决策：主文档收敛为 `project-state.md`、`decisions.md`、`architecture.md`、`testing-and-evaluation.md`、`test-logs/README.md`。

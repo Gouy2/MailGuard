@@ -43,6 +43,7 @@ scan/search
 - 批准 sender/domain memory 后，再跑 `review-proposals`，确认匹配 candidate 会提升为 proposal，且 protected 不被覆盖。
 - 用 `llm-archive-shadow` / `eval-archive-shadow` 验证 LLM shadow 对 candidate 的判断质量，并通过 readiness gate 约束是否能进入下一阶段。
 - 用 `llm-archive-shadow --dry-run` 和短超时小样本诊断 LLM shadow latency。
+- 用 `uv run mailguard ...` workflow presets 降低真实测试命令负担；底层长命令保持兼容。
 - 测试已拆分为按领域命名的多个模块；后续新增测试应优先放入对应模块。
 
 ## 下一步
@@ -66,13 +67,13 @@ scan/search
 - 规则 classifier 有 mock 过拟合风险，真实质量必须靠人工标签评估。
 - confirmed memory 目前只启用 sender/domain 的保守 promotion；category 级 memory 仍不参与 policy，避免规则变得过宽。
 - LLM shadow 当前只提供评估信号；如果真实 false positive 偏高，不能进入 proposal policy。
-- `email_tools.py` 和 `email_cli.py` 已偏大，后续可以按 classifier、proposal、eval、presenter 拆分；当前已先清理 proposal scan 的领域边界。
+- `email_tools.py` 和 `email_cli.py` 已偏大，后续可以按 classifier、proposal、eval、presenter 拆分；当前已先清理 proposal scan 的领域边界，并把 CLI printer 分派改为表驱动。
 - 真实邮箱写操作虽然有审批边界，但自动化 policy 尚未实现，不能提前承诺“自动保持邮箱干净”。
 
 ## 验证基线
 
 - `python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py`：通过。
-- `python3 -m unittest tests.test_email_tools`：101 tests OK，1 skipped。
-- `python3 -m unittest discover -s tests -p 'test*.py'`：101 tests OK，1 skipped。
+- `python3 -m unittest tests.test_email_tools`：104 tests OK，1 skipped。
+- `python3 -m unittest discover -s tests -p 'test*.py'`：104 tests OK，1 skipped。
 - `python3 server/email_cli.py eval-proposals --limit 36`：mock proposal policy precision 1.0，recall 0.5385，false positive 0。
 - `python3 server/email_cli.py review-proposals --limit 12 --all`：mock scan 输出 3 proposals、2 candidates、7 protected、0 no action。

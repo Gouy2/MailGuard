@@ -88,11 +88,23 @@ DEFAULT_MEMORY_PROPOSAL_PATH = SERVER_ROOT / "data" / "memory_proposals.json"
 DEFAULT_ARCHIVE_SHADOW_PATH = SERVER_ROOT / "data" / "archive_shadow_results.json"
 RuntimeFactory = Callable[[], Any]
 InputFunc = Callable[[str], str]
+CLI_PRESETS: dict[str, tuple[str, ...]] = {
+    "archive-review": ("review-proposals", "--limit", "20", "--unread", "--label"),
+    "protected": ("review-proposals", "--limit", "20", "--unread", "--show-protected"),
+    "archive-labels": ("proposal-labels",),
+    "archive-eval": ("eval-real-proposals",),
+    "memory": ("memory-proposals", "--min-samples", "1"),
+    "memory-list": ("confirmed-memory",),
+    "shadow": ("llm-archive-shadow", "--limit", "20", "--continue-on-error"),
+    "shadow-eval": ("eval-archive-shadow",),
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Exercise MailGuard email tools without pasting Python snippets.",
+        epilog=_preset_help(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--session-id",
@@ -411,7 +423,7 @@ def run_cli(
     input_func: InputFunc = input,
 ) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_expand_preset_args(sys.argv[1:] if argv is None else argv))
     setattr(args, "_input_func", input_func)
     setattr(args, "_progress_out", None if args.json_output else stderr)
     runtime = runtime_factory()
@@ -433,6 +445,53 @@ def run_cli(
 
 def main(argv: Sequence[str] | None = None) -> int:
     return run_cli(argv)
+
+
+def _expand_preset_args(argv: Sequence[str]) -> list[str]:
+    args = list(argv)
+    command_index = _command_index(args)
+    if command_index is None:
+        return args
+    preset = CLI_PRESETS.get(args[command_index])
+    if preset is None:
+        return args
+    return [*args[:command_index], *preset, *args[command_index + 1 :]]
+
+
+def _command_index(args: list[str]) -> int | None:
+    index = 0
+    while index < len(args):
+        item = args[index]
+        if item == "--json":
+            index += 1
+            continue
+        if item == "--session-id":
+            index += 2
+            continue
+        if item.startswith("--session-id="):
+            index += 1
+            continue
+        if item.startswith("-"):
+            return index
+        return index
+    return None
+
+
+def _preset_help() -> str:
+    lines = [
+        "Workflow presets:",
+        "  archive-review   -> review-proposals --limit 20 --unread --label",
+        "  protected        -> review-proposals --limit 20 --unread --show-protected",
+        "  archive-labels   -> proposal-labels",
+        "  archive-eval     -> eval-real-proposals",
+        "  memory           -> memory-proposals --min-samples 1",
+        "  memory-list      -> confirmed-memory",
+        "  shadow           -> llm-archive-shadow --limit 20 --continue-on-error",
+        "  shadow-eval      -> eval-archive-shadow",
+        "",
+        "Preset defaults can be overridden, for example: archive-review --limit 50 --all",
+    ]
+    return "\n".join(lines)
 
 
 def _cmd_status(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
@@ -1130,68 +1189,9 @@ def _print_human(args: argparse.Namespace, result: dict[str, Any], *, stdout: Te
         _print_error(result, stderr)
         return
 
-    command = args.display_command
-    if command == "status":
-        _print_status(result["result"], stdout)
-    elif command == "mailboxes":
-        _print_mailboxes(result["result"], stdout)
-    elif command in {"recent", "search"}:
-        _print_email_list(result["result"], stdout)
-    elif command == "detail":
-        _print_detail(result["result"], stdout, show_body=args.body)
-    elif command == "report":
-        _print_report(result["result"], stdout)
-    elif command == "review":
-        _print_review(result["result"], stdout)
-        if result["result"].get("interactive_labeling"):
-            _run_interactive_labeling(args, result["result"], stdout=stdout)
-    elif command == "label":
-        _print_label(result["result"], stdout)
-    elif command == "labels":
-        _print_labels(result["result"], stdout)
-    elif command == "eval-real":
-        _print_eval_real(result["result"], stdout)
-    elif command == "eval-proposals":
-        _print_eval_proposals(result["result"], stdout)
-    elif command == "scan":
-        _print_scan(result["result"], stdout)
-    elif command == "notifications":
-        _print_notifications(result["result"], stdout)
-    elif command == "propose":
-        _print_propose(result["result"], stdout, show_protected=args.show_protected)
-    elif command == "review-proposals":
-        _print_propose(result["result"], stdout, show_protected=args.show_protected)
-        _print_proposal_label_help(result["result"], stdout)
-        if result["result"].get("interactive_labeling"):
-            _run_interactive_proposal_labeling(args, result["result"], stdout=stdout)
-    elif command == "proposals":
-        _print_proposals(result["result"], stdout)
-    elif command == "label-proposal":
-        _print_proposal_label(result["result"], stdout)
-    elif command == "proposal-labels":
-        _print_proposal_labels(result["result"], stdout)
-    elif command == "eval-real-proposals":
-        _print_eval_real_proposals(result["result"], stdout)
-    elif command == "llm-archive-shadow":
-        _print_llm_archive_shadow(result["result"], stdout)
-    elif command == "eval-archive-shadow":
-        _print_eval_archive_shadow(result["result"], stdout)
-    elif command == "observed-memory":
-        _print_observed_memory(result["result"], stdout)
-    elif command == "memory-proposals":
-        _print_memory_proposals(result["result"], stdout)
-    elif command in {"approve-memory", "reject-memory"}:
-        _print_memory_decision(command, result["result"], stdout)
-    elif command == "confirmed-memory":
-        _print_confirmed_memory(result["result"], stdout)
-    elif command in {"approve-proposal", "reject-proposal"}:
-        _print_proposal_decision(command, result["result"], stdout)
-    elif command == "execute-approved":
-        _print_execute_approved(result["result"], stdout)
-    elif command == "audit":
-        _print_audit(result["result"], stdout)
-    elif command in {"mark-read", "archive", "star", "draft"}:
-        _print_mutation_result(command, result["result"], stdout)
+    renderer = COMMAND_RENDERERS.get(args.display_command)
+    if renderer is not None:
+        renderer(args, result, stdout)
     else:
         print(json.dumps(result, ensure_ascii=False, indent=2), file=stdout)
 
@@ -2149,6 +2149,86 @@ def _find_proposal(proposals: list[dict[str, Any]], proposal_id: str) -> dict[st
         if _proposal_item_id(proposal) == proposal_id:
             return proposal
     return None
+
+
+def _result_renderer(printer: Callable[[dict[str, Any], TextIO], None]) -> Callable[[argparse.Namespace, dict[str, Any], TextIO], None]:
+    def render(_args: argparse.Namespace, result: dict[str, Any], out: TextIO) -> None:
+        printer(result["result"], out)
+
+    return render
+
+
+def _render_detail(args: argparse.Namespace, result: dict[str, Any], out: TextIO) -> None:
+    _print_detail(result["result"], out, show_body=args.body)
+
+
+def _render_review(args: argparse.Namespace, result: dict[str, Any], out: TextIO) -> None:
+    payload = result["result"]
+    _print_review(payload, out)
+    if payload.get("interactive_labeling"):
+        _run_interactive_labeling(args, payload, stdout=out)
+
+
+def _render_propose(args: argparse.Namespace, result: dict[str, Any], out: TextIO) -> None:
+    _print_propose(result["result"], out, show_protected=args.show_protected)
+
+
+def _render_review_proposals(args: argparse.Namespace, result: dict[str, Any], out: TextIO) -> None:
+    payload = result["result"]
+    _print_propose(payload, out, show_protected=args.show_protected)
+    _print_proposal_label_help(payload, out)
+    if payload.get("interactive_labeling"):
+        _run_interactive_proposal_labeling(args, payload, stdout=out)
+
+
+def _render_memory_decision(args: argparse.Namespace, result: dict[str, Any], out: TextIO) -> None:
+    _print_memory_decision(args.display_command, result["result"], out)
+
+
+def _render_proposal_decision(args: argparse.Namespace, result: dict[str, Any], out: TextIO) -> None:
+    _print_proposal_decision(args.display_command, result["result"], out)
+
+
+def _render_mutation_result(args: argparse.Namespace, result: dict[str, Any], out: TextIO) -> None:
+    _print_mutation_result(args.display_command, result["result"], out)
+
+
+COMMAND_RENDERERS: dict[str, Callable[[argparse.Namespace, dict[str, Any], TextIO], None]] = {
+    "status": _result_renderer(_print_status),
+    "mailboxes": _result_renderer(_print_mailboxes),
+    "recent": _result_renderer(_print_email_list),
+    "search": _result_renderer(_print_email_list),
+    "detail": _render_detail,
+    "report": _result_renderer(_print_report),
+    "review": _render_review,
+    "label": _result_renderer(_print_label),
+    "labels": _result_renderer(_print_labels),
+    "eval-real": _result_renderer(_print_eval_real),
+    "eval-proposals": _result_renderer(_print_eval_proposals),
+    "scan": _result_renderer(_print_scan),
+    "notifications": _result_renderer(_print_notifications),
+    "propose": _render_propose,
+    "review-proposals": _render_review_proposals,
+    "proposals": _result_renderer(_print_proposals),
+    "label-proposal": _result_renderer(_print_proposal_label),
+    "proposal-labels": _result_renderer(_print_proposal_labels),
+    "eval-real-proposals": _result_renderer(_print_eval_real_proposals),
+    "llm-archive-shadow": _result_renderer(_print_llm_archive_shadow),
+    "eval-archive-shadow": _result_renderer(_print_eval_archive_shadow),
+    "observed-memory": _result_renderer(_print_observed_memory),
+    "memory-proposals": _result_renderer(_print_memory_proposals),
+    "approve-memory": _render_memory_decision,
+    "reject-memory": _render_memory_decision,
+    "confirmed-memory": _result_renderer(_print_confirmed_memory),
+    "approve-proposal": _render_proposal_decision,
+    "reject-proposal": _render_proposal_decision,
+    "execute-approved": _result_renderer(_print_execute_approved),
+    "audit": _result_renderer(_print_audit),
+    "mark-read": _render_mutation_result,
+    "archive": _render_mutation_result,
+    "star": _render_mutation_result,
+    "draft": _render_mutation_result,
+}
 
 
 def _is_success(result: dict[str, Any]) -> bool:

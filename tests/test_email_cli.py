@@ -261,6 +261,108 @@ class EmailCliTests(unittest.TestCase):
         self.assertIn("email-035 [high/finance/review]", output)
         self.assertIn("protected category or reportable mail", output)
 
+    def test_archive_review_preset_expands_to_labeling_workflow_with_overrides(self) -> None:
+        runtime = FakeCliRuntime(
+            execute_results=[
+                {
+                    "ok": True,
+                    "tool": "email_scan_proposals",
+                    "result": {
+                        "provider": "MockEmailProvider",
+                        "fetched": 0,
+                        "proposal_count": 0,
+                        "created_count": 0,
+                        "duplicate_count": 0,
+                        "protected_count": 0,
+                        "candidate_count": 0,
+                        "no_action_count": 0,
+                        "proposals": [],
+                        "candidates": [],
+                    },
+                }
+            ]
+        )
+        stdout = StringIO()
+
+        exit_code = run_cli(
+            ["archive-review", "--limit", "5", "--all"],
+            runtime_factory=lambda: runtime,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [("email_scan_proposals", {"limit": 5, "unread_only": False}, "email-cli")],
+            runtime.execute_calls,
+        )
+        output = stdout.getvalue()
+        self.assertIn("Labels: archive | keep | unsure", output)
+        self.assertIn("Done. Saved: 0, skipped: 0", output)
+
+    def test_protected_preset_expands_to_show_protected_review(self) -> None:
+        runtime = FakeCliRuntime(
+            execute_results=[
+                {
+                    "ok": True,
+                    "tool": "email_scan_proposals",
+                    "result": {
+                        "provider": "MockEmailProvider",
+                        "fetched": 1,
+                        "proposal_count": 0,
+                        "created_count": 0,
+                        "duplicate_count": 0,
+                        "protected_count": 1,
+                        "candidate_count": 0,
+                        "no_action_count": 0,
+                        "proposals": [],
+                        "protected": [
+                            {
+                                "email_id": "email-035",
+                                "from_email": "billing@domains.example",
+                                "subject": "Domain renewal invoice due tomorrow",
+                                "category": "finance",
+                                "importance": "high",
+                                "suggested_action": "review",
+                                "policy_reason": "protected category or reportable mail",
+                            }
+                        ],
+                    },
+                }
+            ]
+        )
+        stdout = StringIO()
+
+        exit_code = run_cli(
+            ["protected"],
+            runtime_factory=lambda: runtime,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [("email_scan_proposals", {"limit": 20, "unread_only": True}, "email-cli")],
+            runtime.execute_calls,
+        )
+        self.assertIn("Protected:", stdout.getvalue())
+
+    def test_archive_labels_preset_lists_proposal_labels_without_touching_real_email_labels(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            labels_path = Path(temp_dir) / "real_proposal_labels.json"
+            stdout = StringIO()
+
+            exit_code = run_cli(
+                ["archive-labels", "--labels-path", str(labels_path)],
+                runtime_factory=lambda: FakeCliRuntime([]),
+                stdout=stdout,
+                stderr=StringIO(),
+            )
+
+        self.assertEqual(0, exit_code)
+        self.assertIn("Count: 0", stdout.getvalue())
+        self.assertIn("real_proposal_labels.json", stdout.getvalue())
+
     def test_approve_proposal_command_calls_expected_tool(self) -> None:
         runtime = FakeCliRuntime(
             execute_results=[

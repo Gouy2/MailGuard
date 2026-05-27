@@ -51,13 +51,17 @@ uv run uvicorn app.main:app --reload
 
 ```bash
 cd server
-uv run python email_cli.py review-proposals --limit 20 --unread --label
-uv run python email_cli.py eval-real-proposals
-uv run python email_cli.py observed-memory
-uv run python email_cli.py memory-proposals
-uv run python email_cli.py llm-archive-shadow --limit 20 --continue-on-error
-uv run python email_cli.py eval-archive-shadow
+uv run mailguard archive-review
+uv run mailguard protected
+uv run mailguard archive-labels
+uv run mailguard archive-eval
+uv run mailguard memory
+uv run mailguard memory-list
+uv run mailguard shadow
+uv run mailguard shadow-eval
 ```
+
+这些短命令是 workflow presets，底层长命令仍然保留。常用参数可以覆盖，例如 `uv run mailguard archive-review --limit 50 --all`。
 
 `llm-archive-shadow` 默认跳过已评分 item；需要重新评分时加 `--force`。
 新标签会保存 snippet，shadow 默认不再逐封读取邮箱详情；旧标签缺 snippet 时可加 `--fetch-missing-snippet`。用 `--dry-run` 可以只查看输入规模和脱敏边界，不调用 LLM，也不写 shadow 文件。

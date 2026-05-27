@@ -13,7 +13,7 @@ python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.
 当前基线：
 
 ```text
-101 tests OK (1 skipped when FastAPI is unavailable in root python)
+104 tests OK (1 skipped when FastAPI is unavailable in root python)
 py_compile passed
 ```
 
@@ -297,21 +297,22 @@ server/data/real_email_labels.json
 
 目标是在不执行真实归档的前提下，评估真实邮箱 archive proposal 的可接受度，并收集 candidate 中哪些邮件未来可以提升为 proposal。
 
-执行前提醒：这是一次真实 QQ/Foxmail 只读审核测试。可以运行 `review-proposals`、`proposal-labels`、`eval-real-proposals`、`observed-memory`、`memory-proposals`、`approve-memory`、`reject-memory`、`confirmed-memory`；不要运行 `approve-proposal` 或 `execute-approved`。
+执行前提醒：这是一次真实 QQ/Foxmail 只读审核测试。可以运行 `archive-review`、`protected`、`archive-labels`、`archive-eval`、`memory`、`memory-list`、`shadow`、`shadow-eval`，也可以使用它们对应的长命令；不要运行 `approve-proposal` 或 `execute-approved`。
 
 ```bash
 cd server
 export MAILGUARD_STATE_DB=data/mailguard_state.db
-uv run python email_cli.py review-proposals --limit 20 --unread --label
-uv run python email_cli.py review-proposals --limit 20 --unread --show-protected
-uv run python email_cli.py proposal-labels
-uv run python email_cli.py eval-real-proposals
-uv run python email_cli.py observed-memory --min-samples 1
-uv run python email_cli.py memory-proposals --min-samples 1
-uv run python email_cli.py confirmed-memory
-uv run python email_cli.py llm-archive-shadow --limit 20 --continue-on-error
-uv run python email_cli.py eval-archive-shadow
+uv run mailguard archive-review
+uv run mailguard protected
+uv run mailguard archive-labels
+uv run mailguard archive-eval
+uv run mailguard memory
+uv run mailguard memory-list
+uv run mailguard shadow
+uv run mailguard shadow-eval
 ```
+
+短命令是 workflow presets，不是新行为层。常用覆盖参数仍可追加，例如 `uv run mailguard archive-review --limit 50 --all`、`uv run mailguard shadow --limit 50 --force`。现有 `review` / `labels` 命令保留给 real email label workflow，因此 archive proposal/candidate 的短命令使用 `archive-review` / `archive-labels`。
 
 标签：
 
