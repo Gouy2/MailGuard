@@ -145,9 +145,16 @@ def _proposed_preferences(insights: list[dict[str, Any]]) -> list[dict[str, Any]
             {
                 "proposal": f"archive_{insight['group_type']}",
                 "value": insight["key"],
+                "kind": insight["kind"],
+                "group_type": insight["group_type"],
                 "confidence": insight["confidence"],
                 "sample_count": insight["sample_count"],
+                "archive_count": insight["archive_count"],
+                "keep_count": insight["keep_count"],
                 "archive_rate": insight["archive_rate"],
+                "keep_rate": insight["keep_rate"],
+                "item_type_counts": insight["item_type_counts"],
+                "examples": insight["examples"],
                 "status": "observed_only",
             }
         )

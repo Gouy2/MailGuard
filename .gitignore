@@ -15,6 +15,7 @@ config.json
 *_config.json
 
 # OS
+.DS_Store
 nul
 
 # Project notes (local only)
@@ -25,6 +26,8 @@ todolist.md
 server/logs/
 server/data/real_email_labels.json
 server/data/real_proposal_labels.json
+server/data/memory_proposals.json
+server/data/archive_shadow_results.json
 .mailguard/
 
 # claude

@@ -21,7 +21,7 @@ from server.app.agent import AgentRuntime
 from server.app.auth import configured_auth_token, require_api_token
 from server.app.email_eval import evaluate_email_classifier
 from server.app.email_provider import MockEmailProvider
-from server.app.email_proposals import approve_action_proposal, execute_approved_action_proposals
+from server.app.email_proposals import approve_action_proposal, execute_approved_action_proposals, scan_action_proposals
 from server.app.email_tools import classify_email
 from server.app.llm_email_classifier import _normalize_decision, _parse_json_object
 from server.app.memory import MemoryStore
@@ -50,7 +50,14 @@ from tests.fakes import (
 
 class EmailToolRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._env_patcher = patch.dict(os.environ, {"MAILGUARD_EMAIL_PROVIDER": "mock", "MAILGUARD_STATE_DB": ""})
+        self._env_patcher = patch.dict(
+            os.environ,
+            {
+                "MAILGUARD_EMAIL_PROVIDER": "mock",
+                "MAILGUARD_STATE_DB": "",
+                "MAILGUARD_MEMORY_PROPOSALS": "off",
+            },
+        )
         self._env_patcher.start()
         self.runtime = AgentRuntime.create()
 
@@ -679,6 +686,72 @@ class EmailToolRuntimeTests(unittest.TestCase):
         protected_ids = {item["email_id"] for item in response["result"]["protected"]}
         self.assertNotIn("email-033", proposal_ids)
         self.assertIn("email-033", protected_ids)
+
+    def test_confirmed_memory_promotes_candidate_but_not_protected_mail(self) -> None:
+        result = scan_action_proposals(
+            provider=MockEmailProvider(),
+            memory_store=MemoryStore(),
+            session_id="confirmed-memory-scan",
+            classifier=classify_email,
+            limit=12,
+            unread_only=False,
+            confirmed_memory={
+                "archive_senders": ["noreply@survey.example", "billing@domains.example"],
+                "archive_domains": [],
+                "archive_categories": ["finance"],
+            },
+        )
+
+        proposal_ids = {item["email_id"] for item in result["proposals"]}
+        candidate_ids = {item["email_id"] for item in result["candidates"]}
+        protected_ids = {item["email_id"] for item in result["protected"]}
+        promoted = next(item for item in result["proposals"] if item["email_id"] == "email-031")
+
+        self.assertIn("email-031", proposal_ids)
+        self.assertNotIn("email-031", candidate_ids)
+        self.assertIn("confirmed memory promotes", promoted["reason"])
+        self.assertNotIn("email-035", proposal_ids)
+        self.assertIn("email-035", protected_ids)
+
+    def test_scan_proposals_reads_confirmed_memory_file_at_runtime(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            memory_path = Path(temp_dir) / "memory_proposals.json"
+            memory_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "proposals": {
+                            "memory-archive-sender": {
+                                "status": "approved",
+                                "memory_type": "archive_sender",
+                                "value": "noreply@survey.example",
+                            },
+                            "memory-archive-category": {
+                                "status": "approved",
+                                "memory_type": "archive_category",
+                                "value": "finance",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {"MAILGUARD_MEMORY_PROPOSALS": str(memory_path)}):
+                response = self.runtime.execute_tool_for_test(
+                    "email_scan_proposals",
+                    {"limit": 12, "unread_only": False},
+                    session_id="proposal-memory-file",
+                )
+
+        self.assertTrue(response["ok"])
+        proposal_ids = {item["email_id"] for item in response["result"]["proposals"]}
+        protected_ids = {item["email_id"] for item in response["result"]["protected"]}
+        promoted = next(item for item in response["result"]["proposals"] if item["email_id"] == "email-031")
+        self.assertIn("email-031", proposal_ids)
+        self.assertIn("confirmed memory promotes", promoted["reason"])
+        self.assertNotIn("email-035", proposal_ids)
+        self.assertIn("email-035", protected_ids)
 
     def test_approved_proposal_executes_archive_and_writes_audit(self) -> None:
         scan = self.runtime.execute_tool_for_test(

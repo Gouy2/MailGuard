@@ -126,6 +126,8 @@ email_scan_proposals
 - important sender/domain preference 会阻止 proposal。
 - 低价值邮件如果带有 positive signals，会进入 `candidate`，用于标注和学习，不执行。
 - 其他可忽略但未满足严格 proposal 条件的邮件也进入 `candidate`。
+- 已确认的 `archive_sender` / `archive_domain` memory 可以把匹配的低价值 candidate 提升为 proposal。
+- 已确认的 `archive_category` 当前只保存，不参与 policy。
 - `proposal`：建议层，需要审批。
 - `no_action`：没有形成保护、候选或建议的普通邮件。
 
@@ -135,6 +137,24 @@ email_scan_proposals
 - `candidate`：学习层，不执行。
 - `protected`：不能被 LLM 直接推翻。
 - `auto_eligible`：未来用户明确授权后才可能自动执行。
+
+## LLM Shadow Scorer
+
+当前已引入 archive suitability shadow scorer，用于观察 LLM 是否能更好地区分 candidate/proposal 是否适合归档。
+
+输入默认只包含：
+
+- email subject / from / snippet / received_at / read state / attachment flag
+- rule classification
+- policy bucket 和 policy reason
+- confirmed memory 的命中情况
+- safety constraints
+
+不包含邮件正文，不创建 proposal，不批准 proposal，不执行邮箱写操作。
+
+`review-proposals --label` 会把审核时已展示的 snippet 保存到 `server/data/real_proposal_labels.json`。`llm-archive-shadow` 默认读取本地标签中的 snippet，不再逐封调用 `email_get_detail`；旧标签缺 snippet 时才通过显式参数补取。
+
+输出保存到本地 `server/data/archive_shadow_results.json`，用于和 `server/data/real_proposal_labels.json` 做离线评估。`eval-archive-shadow` 会额外输出 readiness gate：样本量、precision、false positive、error 和 latency 同时达标后，才进入“是否做 guarded policy experiment”的讨论。即使 LLM 对 `protected` 给出 `yes`，也只作为评估信号，不能改变 `protected` 决策。
 
 ## Memory 方向
 
@@ -154,7 +174,16 @@ Memory 分三层：
 - `confirmed_memory`：用户确认过的偏好。
 - `automation_policy`：用户明确授权的自动化规则。
 
-当前已有只读 `observed-memory` CLI，从 proposal/candidate 标签中归纳 sender/domain/category 的 archive/keep 倾向，并输出 observed-only proposed preferences；它不会自动写入偏好或改变策略。
+当前已有只读 `observed-memory` CLI，从 proposal/candidate 标签中归纳 sender/domain/category 的 archive/keep 倾向，并输出 observed-only proposed preferences。
+
+当前已有本地 `memory-proposals` / `approve-memory` / `reject-memory` CLI，把 observed preferences 转成可确认的 memory proposal。批准后只写入本地 confirmed memory 文件，不自动写入 email preferences。
+
+当前 policy 只读取两类 confirmed memory：
+
+- `archive_sender`
+- `archive_domain`
+
+它们只能把匹配的低价值 candidate 提升为 archive proposal，不能覆盖 `protected`，不能绕过 approval，也不会执行真实邮箱写操作。`archive_category` 仍是观察和展示数据，暂不参与 policy，避免类别级规则过宽。
 
 LLM 可以读取 memory，policy 也可以读取 memory；但只有 `automation_policy` 能支撑未来自动执行。自然语言偏好抽取先生成 `proposed_memory_update`，确认后才进入 `confirmed_memory`。
 

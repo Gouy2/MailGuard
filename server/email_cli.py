@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable, Sequence, TextIO
 
@@ -15,6 +17,27 @@ if __package__ in {None, ""}:  # pragma: no cover - runtime path bootstrap for s
 
 try:
     from app.agent import AgentRuntime
+    from app.archive_shadow import (
+        ArchiveSuitabilityScorer,
+        DEFAULT_ARCHIVE_SHADOW_MAX_AVG_LATENCY_MS,
+        DEFAULT_ARCHIVE_SHADOW_MAX_FALSE_POSITIVES,
+        DEFAULT_ARCHIVE_SHADOW_MIN_DECISIVE_LABELS,
+        DEFAULT_ARCHIVE_SHADOW_TARGET_PRECISION,
+        archive_shadow_input_diagnostics,
+        archive_shadow_record,
+        build_archive_shadow_input,
+        evaluate_archive_shadow_results,
+        load_archive_shadow_results,
+        save_archive_shadow_result,
+    )
+    from app.memory_proposals import (
+        approve_memory_proposal,
+        confirmed_memory_from_store,
+        list_memory_proposals,
+        load_memory_proposals,
+        refresh_memory_proposals,
+        reject_memory_proposal,
+    )
     from app.observed_memory import build_observed_memory_report
     from app.real_proposal_eval import (
         evaluate_real_proposal_labels,
@@ -22,11 +45,32 @@ try:
         save_real_proposal_label,
     )
     from app.real_email_eval import evaluate_real_labels, load_real_labels, save_real_label
-    from app.runtime_env import SERVER_ROOT
+    from app.runtime_env import SERVER_ROOT, load_server_env
 except ModuleNotFoundError as exc:  # pragma: no cover - used when imported from repo root
     if exc.name != "app":
         raise
     from server.app.agent import AgentRuntime
+    from server.app.archive_shadow import (
+        ArchiveSuitabilityScorer,
+        DEFAULT_ARCHIVE_SHADOW_MAX_AVG_LATENCY_MS,
+        DEFAULT_ARCHIVE_SHADOW_MAX_FALSE_POSITIVES,
+        DEFAULT_ARCHIVE_SHADOW_MIN_DECISIVE_LABELS,
+        DEFAULT_ARCHIVE_SHADOW_TARGET_PRECISION,
+        archive_shadow_input_diagnostics,
+        archive_shadow_record,
+        build_archive_shadow_input,
+        evaluate_archive_shadow_results,
+        load_archive_shadow_results,
+        save_archive_shadow_result,
+    )
+    from server.app.memory_proposals import (
+        approve_memory_proposal,
+        confirmed_memory_from_store,
+        list_memory_proposals,
+        load_memory_proposals,
+        refresh_memory_proposals,
+        reject_memory_proposal,
+    )
     from server.app.observed_memory import build_observed_memory_report
     from server.app.real_proposal_eval import (
         evaluate_real_proposal_labels,
@@ -34,12 +78,14 @@ except ModuleNotFoundError as exc:  # pragma: no cover - used when imported from
         save_real_proposal_label,
     )
     from server.app.real_email_eval import evaluate_real_labels, load_real_labels, save_real_label
-    from server.app.runtime_env import SERVER_ROOT
+    from server.app.runtime_env import SERVER_ROOT, load_server_env
 
 
 DEFAULT_SESSION_ID = "email-cli"
 DEFAULT_REAL_LABEL_PATH = SERVER_ROOT / "data" / "real_email_labels.json"
 DEFAULT_REAL_PROPOSAL_LABEL_PATH = SERVER_ROOT / "data" / "real_proposal_labels.json"
+DEFAULT_MEMORY_PROPOSAL_PATH = SERVER_ROOT / "data" / "memory_proposals.json"
+DEFAULT_ARCHIVE_SHADOW_PATH = SERVER_ROOT / "data" / "archive_shadow_results.json"
 RuntimeFactory = Callable[[], Any]
 InputFunc = Callable[[str], str]
 
@@ -189,6 +235,67 @@ def build_parser() -> argparse.ArgumentParser:
     eval_real_proposals.add_argument("--labels-path", default=str(DEFAULT_REAL_PROPOSAL_LABEL_PATH))
     eval_real_proposals.set_defaults(func=_cmd_eval_real_proposals, display_command="eval-real-proposals")
 
+    llm_archive_shadow = subparsers.add_parser(
+        "llm-archive-shadow",
+        help="Run LLM archive suitability shadow scoring for saved proposal/candidate labels.",
+    )
+    llm_archive_shadow.add_argument("--labels-path", default=str(DEFAULT_REAL_PROPOSAL_LABEL_PATH))
+    llm_archive_shadow.add_argument("--limit", type=int, default=20)
+    llm_archive_shadow.add_argument("--shadow-path", default=str(DEFAULT_ARCHIVE_SHADOW_PATH))
+    llm_archive_shadow.add_argument("--memory-path", default=str(DEFAULT_MEMORY_PROPOSAL_PATH))
+    llm_archive_shadow.add_argument("--model", default="", help="Optional model override.")
+    llm_archive_shadow.add_argument("--timeout", type=float, default=30.0)
+    llm_archive_shadow.add_argument("--max-retries", type=int, default=1)
+    llm_archive_shadow.add_argument("--force", action="store_true", help="Re-score items even when cached results exist.")
+    llm_archive_shadow.add_argument(
+        "--fetch-missing-snippet",
+        action="store_true",
+        help="Fetch email detail only for old labels that do not have a saved snippet.",
+    )
+    llm_archive_shadow.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Build and print input diagnostics without calling the LLM or writing shadow results.",
+    )
+    llm_archive_shadow.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Save per-item errors instead of aborting on the first LLM/detail failure.",
+    )
+    llm_archive_shadow.set_defaults(func=_cmd_llm_archive_shadow, display_command="llm-archive-shadow")
+
+    eval_archive_shadow = subparsers.add_parser(
+        "eval-archive-shadow",
+        help="Evaluate saved LLM archive shadow results against local proposal/candidate labels.",
+    )
+    eval_archive_shadow.add_argument("--labels-path", default=str(DEFAULT_REAL_PROPOSAL_LABEL_PATH))
+    eval_archive_shadow.add_argument("--shadow-path", default=str(DEFAULT_ARCHIVE_SHADOW_PATH))
+    eval_archive_shadow.add_argument(
+        "--min-decisive-labels",
+        type=int,
+        default=DEFAULT_ARCHIVE_SHADOW_MIN_DECISIVE_LABELS,
+        help="Minimum decisive archive/keep labels before shadow can be considered policy-ready.",
+    )
+    eval_archive_shadow.add_argument(
+        "--target-precision",
+        type=float,
+        default=DEFAULT_ARCHIVE_SHADOW_TARGET_PRECISION,
+        help="Target precision for archive=yes shadow predictions.",
+    )
+    eval_archive_shadow.add_argument(
+        "--max-false-positives",
+        type=int,
+        default=DEFAULT_ARCHIVE_SHADOW_MAX_FALSE_POSITIVES,
+        help="Maximum accepted keep->yes false positives.",
+    )
+    eval_archive_shadow.add_argument(
+        "--max-avg-latency-ms",
+        type=int,
+        default=DEFAULT_ARCHIVE_SHADOW_MAX_AVG_LATENCY_MS,
+        help="Maximum average shadow scoring latency for policy readiness.",
+    )
+    eval_archive_shadow.set_defaults(func=_cmd_eval_archive_shadow, display_command="eval-archive-shadow")
+
     observed_memory = subparsers.add_parser(
         "observed-memory",
         aliases=["memory-insights"],
@@ -198,6 +305,41 @@ def build_parser() -> argparse.ArgumentParser:
     observed_memory.add_argument("--min-samples", type=int, default=1)
     observed_memory.add_argument("--limit", type=int, default=20)
     observed_memory.set_defaults(func=_cmd_observed_memory, display_command="observed-memory")
+
+    memory_proposals = subparsers.add_parser(
+        "memory-proposals",
+        help="Generate and list confirmable memory proposals from observed labels.",
+    )
+    memory_proposals.add_argument("--labels-path", default=str(DEFAULT_REAL_PROPOSAL_LABEL_PATH))
+    memory_proposals.add_argument("--memory-path", default=str(DEFAULT_MEMORY_PROPOSAL_PATH))
+    memory_proposals.add_argument("--min-samples", type=int, default=1)
+    memory_proposals.add_argument("--limit", type=int, default=20)
+    memory_proposals.add_argument("--status", choices=["", "proposed", "approved", "rejected"], default="")
+    memory_proposals.set_defaults(func=_cmd_memory_proposals, display_command="memory-proposals")
+
+    approve_memory = subparsers.add_parser(
+        "approve-memory",
+        help="Approve one local memory proposal. Archive sender/domain memory can affect future proposal scans.",
+    )
+    approve_memory.add_argument("proposal_id")
+    approve_memory.add_argument("--memory-path", default=str(DEFAULT_MEMORY_PROPOSAL_PATH))
+    approve_memory.set_defaults(func=_cmd_approve_memory, display_command="approve-memory")
+
+    reject_memory = subparsers.add_parser(
+        "reject-memory",
+        help="Reject one local memory proposal.",
+    )
+    reject_memory.add_argument("proposal_id")
+    reject_memory.add_argument("--reason", default="")
+    reject_memory.add_argument("--memory-path", default=str(DEFAULT_MEMORY_PROPOSAL_PATH))
+    reject_memory.set_defaults(func=_cmd_reject_memory, display_command="reject-memory")
+
+    confirmed_memory = subparsers.add_parser(
+        "confirmed-memory",
+        help="List locally confirmed memory entries and policy applicability.",
+    )
+    confirmed_memory.add_argument("--memory-path", default=str(DEFAULT_MEMORY_PROPOSAL_PATH))
+    confirmed_memory.set_defaults(func=_cmd_confirmed_memory, display_command="confirmed-memory")
 
     approve_proposal = subparsers.add_parser("approve-proposal", help="Approve one action proposal.")
     approve_proposal.add_argument("proposal_id")
@@ -271,6 +413,7 @@ def run_cli(
     parser = build_parser()
     args = parser.parse_args(argv)
     setattr(args, "_input_func", input_func)
+    setattr(args, "_progress_out", None if args.json_output else stderr)
     runtime = runtime_factory()
     try:
         result = args.func(args, runtime)
@@ -578,6 +721,193 @@ def _cmd_eval_real_proposals(args: argparse.Namespace, runtime: Any) -> dict[str
     }
 
 
+def _cmd_llm_archive_shadow(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    label_data = load_real_proposal_labels(args.labels_path)
+    label_eval = evaluate_real_proposal_labels(label_data)
+    label_rows = list(label_eval.get("rows", []))[: max(1, int(args.limit))]
+    confirmed_memory = confirmed_memory_from_store(load_memory_proposals(args.memory_path))
+    model_name = _archive_shadow_model_name(args.model)
+    if not label_rows:
+        return {
+            "ok": True,
+            "tool": "email_llm_archive_shadow",
+            "result": {
+                "labels_path": str(Path(args.labels_path)),
+                "shadow_path": str(Path(args.shadow_path)),
+                "memory_path": str(Path(args.memory_path)),
+                "model": model_name,
+                "label_count": label_eval.get("sample_count", 0),
+                "selected_count": 0,
+                "scored_count": 0,
+                "skipped_count": 0,
+                "error_count": 0,
+                "total_elapsed_ms": 0,
+                "avg_latency_ms": 0,
+                "slowest_items": [],
+                "records": [],
+                "mailbox_mutation": False,
+                "proposal_mutation": False,
+            },
+        }
+    scorer = None
+    cached_results = load_archive_shadow_results(args.shadow_path).get("results", {})
+    records = []
+    errors = []
+    skipped_count = 0
+    scored_latencies = []
+    dry_run_count = 0
+
+    for index, label_row in enumerate(label_rows, start=1):
+        item = _shadow_item_from_label(label_row)
+        item_id = _proposal_item_id(item)
+        item_started_at = time.perf_counter()
+        if args.dry_run:
+            _print_shadow_progress(args, f"[{index}/{len(label_rows)}] dry-run {item_id}")
+            try:
+                email = _email_for_archive_shadow(args, runtime, item)
+                shadow_input = build_archive_shadow_input(item, email, confirmed_memory=confirmed_memory)
+                diagnostics = archive_shadow_input_diagnostics(shadow_input)
+                record = _archive_shadow_dry_run_record(
+                    item=item,
+                    email=email,
+                    model=model_name,
+                    diagnostics=diagnostics,
+                    elapsed_ms=_elapsed_ms(item_started_at),
+                )
+                dry_run_count += 1
+            except Exception as exc:
+                if not args.continue_on_error:
+                    raise
+                record = _archive_shadow_dry_run_record(
+                    item=item,
+                    email={"id": item.get("email_id", "")},
+                    model=model_name,
+                    diagnostics={},
+                    elapsed_ms=_elapsed_ms(item_started_at),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                errors.append(record)
+            records.append(record)
+            _print_shadow_progress(args, f"[{index}/{len(label_rows)}] dry-run done {item_id} {record['elapsed_ms']}ms")
+            continue
+
+        cached = cached_results.get(item_id)
+        if not args.force and _usable_archive_shadow_cache(cached, model_name):
+            record = dict(cached)
+            record["cached"] = True
+            records.append(record)
+            skipped_count += 1
+            _print_shadow_progress(args, f"[{index}/{len(label_rows)}] cached {item_id}")
+            continue
+
+        if scorer is None:
+            scorer = ArchiveSuitabilityScorer(
+                model=args.model or None,
+                timeout=float(args.timeout),
+                max_retries=int(args.max_retries),
+            )
+            model_name = scorer.model
+        _print_shadow_progress(args, f"[{index}/{len(label_rows)}] scoring {item_id}")
+        try:
+            email = _email_for_archive_shadow(args, runtime, item)
+            shadow_input = build_archive_shadow_input(item, email, confirmed_memory=confirmed_memory)
+            judgment = scorer.score(shadow_input)
+            record = archive_shadow_record(
+                shadow_input=shadow_input,
+                judgment=judgment,
+                model=model_name,
+                elapsed_ms=_elapsed_ms(item_started_at),
+            )
+            scored_latencies.append(record["elapsed_ms"])
+            _print_shadow_progress(
+                args,
+                (
+                    f"[{index}/{len(label_rows)}] done {item_id} "
+                    f"{record['elapsed_ms']}ms "
+                    f"{record['judgment'].get('archive_suitability', '')}/"
+                    f"{record['judgment'].get('confidence', '')}"
+                ),
+            )
+        except Exception as exc:
+            if not args.continue_on_error:
+                raise
+            shadow_input = build_archive_shadow_input(item, {"id": item.get("email_id", "")}, confirmed_memory=confirmed_memory)
+            record = archive_shadow_record(
+                shadow_input=shadow_input,
+                judgment={
+                    "archive_suitability": "",
+                    "confidence": "",
+                    "reason_codes": [],
+                    "brief_reason": "",
+                },
+                model=model_name,
+                error=f"{type(exc).__name__}: {exc}",
+                elapsed_ms=_elapsed_ms(item_started_at),
+            )
+            errors.append(record)
+            scored_latencies.append(record["elapsed_ms"])
+            _print_shadow_progress(args, f"[{index}/{len(label_rows)}] error {item_id} {record['elapsed_ms']}ms")
+
+        save_archive_shadow_result(args.shadow_path, record)
+        record["cached"] = False
+        records.append(record)
+
+    total_elapsed_ms = _elapsed_ms(started_at)
+    slowest_items = _slowest_shadow_items(records)
+    return {
+        "ok": True,
+        "tool": "email_llm_archive_shadow",
+        "result": {
+            "labels_path": str(Path(args.labels_path)),
+            "shadow_path": str(Path(args.shadow_path)),
+            "memory_path": str(Path(args.memory_path)),
+            "model": model_name,
+            "label_count": label_eval.get("sample_count", 0),
+            "selected_count": len(label_rows),
+            "dry_run": bool(args.dry_run),
+            "dry_run_count": dry_run_count,
+            "scored_count": len(
+                [
+                    item
+                    for item in records
+                    if not item.get("error") and not item.get("cached") and not item.get("dry_run")
+                ]
+            ),
+            "skipped_count": skipped_count,
+            "error_count": len(errors),
+            "total_elapsed_ms": total_elapsed_ms,
+            "avg_latency_ms": _average_ms(scored_latencies),
+            "slowest_items": slowest_items,
+            "records": records,
+            "mailbox_mutation": False,
+            "proposal_mutation": False,
+        },
+    }
+
+
+def _cmd_eval_archive_shadow(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    label_data = load_real_proposal_labels(args.labels_path)
+    shadow_data = load_archive_shadow_results(args.shadow_path)
+    evaluation = evaluate_archive_shadow_results(
+        label_data=label_data,
+        shadow_data=shadow_data,
+        min_decisive_labels=args.min_decisive_labels,
+        target_precision=args.target_precision,
+        max_false_positives=args.max_false_positives,
+        max_avg_latency_ms=args.max_avg_latency_ms,
+    )
+    return {
+        "ok": True,
+        "tool": "email_eval_archive_shadow",
+        "result": {
+            "labels_path": str(Path(args.labels_path)),
+            "shadow_path": str(Path(args.shadow_path)),
+            "evaluation": evaluation,
+        },
+    }
+
+
 def _cmd_observed_memory(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
     data = load_real_proposal_labels(args.labels_path)
     report = build_observed_memory_report(data, min_samples=args.min_samples)
@@ -588,6 +918,76 @@ def _cmd_observed_memory(args: argparse.Namespace, runtime: Any) -> dict[str, An
             "labels_path": str(Path(args.labels_path)),
             "limit": max(1, int(args.limit)),
             "report": report,
+        },
+    }
+
+
+def _cmd_memory_proposals(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    label_data = load_real_proposal_labels(args.labels_path)
+    report = build_observed_memory_report(label_data, min_samples=args.min_samples)
+    refreshed = refresh_memory_proposals(args.memory_path, report)
+    listed = list_memory_proposals(args.memory_path, status=args.status, limit=args.limit)
+    return {
+        "ok": True,
+        "tool": "email_memory_proposals",
+        "result": {
+            "labels_path": str(Path(args.labels_path)),
+            "memory_path": str(Path(args.memory_path)),
+            "created_count": refreshed["created_count"],
+            "updated_count": refreshed["updated_count"],
+            "total_count": refreshed["total_count"],
+            "status": listed["status"],
+            "count": listed["count"],
+            "proposals": listed["proposals"],
+            "confirmed_memory": listed["confirmed_memory"],
+            "mailbox_mutation": False,
+            "policy_mutation": False,
+        },
+    }
+
+
+def _cmd_approve_memory(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    decision = approve_memory_proposal(args.memory_path, args.proposal_id)
+    return {
+        "ok": True,
+        "tool": "email_approve_memory",
+        "result": {
+            "memory_path": str(Path(args.memory_path)),
+            "proposal": decision["proposal"],
+            "confirmed_memory": decision["confirmed_memory"],
+            "mailbox_mutation": False,
+            "policy_mutation": False,
+        },
+    }
+
+
+def _cmd_reject_memory(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    decision = reject_memory_proposal(args.memory_path, args.proposal_id, reason=args.reason)
+    return {
+        "ok": True,
+        "tool": "email_reject_memory",
+        "result": {
+            "memory_path": str(Path(args.memory_path)),
+            "proposal": decision["proposal"],
+            "confirmed_memory": decision["confirmed_memory"],
+            "mailbox_mutation": False,
+            "policy_mutation": False,
+        },
+    }
+
+
+def _cmd_confirmed_memory(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    listed = list_memory_proposals(args.memory_path, status="approved", limit=500)
+    return {
+        "ok": True,
+        "tool": "email_confirmed_memory",
+        "result": {
+            "memory_path": str(Path(args.memory_path)),
+            "count": listed["count"],
+            "proposals": listed["proposals"],
+            "confirmed_memory": listed["confirmed_memory"],
+            "mailbox_mutation": False,
+            "policy_mutation": False,
         },
     }
 
@@ -772,8 +1172,18 @@ def _print_human(args: argparse.Namespace, result: dict[str, Any], *, stdout: Te
         _print_proposal_labels(result["result"], stdout)
     elif command == "eval-real-proposals":
         _print_eval_real_proposals(result["result"], stdout)
+    elif command == "llm-archive-shadow":
+        _print_llm_archive_shadow(result["result"], stdout)
+    elif command == "eval-archive-shadow":
+        _print_eval_archive_shadow(result["result"], stdout)
     elif command == "observed-memory":
         _print_observed_memory(result["result"], stdout)
+    elif command == "memory-proposals":
+        _print_memory_proposals(result["result"], stdout)
+    elif command in {"approve-memory", "reject-memory"}:
+        _print_memory_decision(command, result["result"], stdout)
+    elif command == "confirmed-memory":
+        _print_confirmed_memory(result["result"], stdout)
     elif command in {"approve-proposal", "reject-proposal"}:
         _print_proposal_decision(command, result["result"], stdout)
     elif command == "execute-approved":
@@ -1264,6 +1674,117 @@ def _print_eval_real_proposals(result: dict[str, Any], out: TextIO) -> None:
         print(f"- {_proposal_item_id(item)}: {_clip(item.get('subject', ''), 140)}", file=out)
 
 
+def _print_llm_archive_shadow(result: dict[str, Any], out: TextIO) -> None:
+    print(f"Labels file: {result.get('labels_path', '')}", file=out)
+    print(f"Shadow file: {result.get('shadow_path', '')}", file=out)
+    print(f"Memory file: {result.get('memory_path', '')}", file=out)
+    print(f"Model: {result.get('model', '')}", file=out)
+    print(
+        f"Labels: {result.get('label_count', 0)}, selected: {result.get('selected_count', 0)}, "
+        f"dry-run: {result.get('dry_run_count', 0)}, "
+        f"scored: {result.get('scored_count', 0)}, skipped: {result.get('skipped_count', 0)}, "
+        f"errors: {result.get('error_count', 0)}",
+        file=out,
+    )
+    print(
+        f"Total elapsed: {result.get('total_elapsed_ms', 0)}ms, "
+        f"avg scored latency: {result.get('avg_latency_ms', 0)}ms",
+        file=out,
+    )
+    print(
+        f"Mailbox mutation: {bool(result.get('mailbox_mutation', False))}, "
+        f"proposal mutation: {bool(result.get('proposal_mutation', False))}",
+        file=out,
+    )
+    for index, record in enumerate(result.get("records", [])[:20], start=1):
+        judgment = record.get("judgment", {})
+        print(
+            f"{index}. {record.get('item_id', '')} [{record.get('policy_bucket', '')}] "
+            f"{judgment.get('archive_suitability', '')}/{judgment.get('confidence', '')} "
+            f"{'dry-run ' if record.get('dry_run') else ''}"
+            f"{'cached ' if record.get('cached') else ''}"
+            f"{record.get('elapsed_ms', 0)}ms "
+            f"{record.get('email_id', '')}",
+            file=out,
+        )
+        print(f"   Subject: {_clip(record.get('subject', ''), 140)}", file=out)
+        diagnostics = record.get("diagnostics") or {}
+        if diagnostics:
+            print(
+                f"   Input: prompt={diagnostics.get('prompt_chars', 0)} chars, "
+                f"request={diagnostics.get('request_chars', 0)} chars, "
+                f"snippet={diagnostics.get('snippet_chars', 0)} chars, "
+                f"memory_matches={diagnostics.get('memory_match_count', 0)}, "
+                f"body_included={bool(diagnostics.get('body_included', False))}, "
+                f"request_elapsed={diagnostics.get('request_elapsed_ms', 0)}ms",
+                file=out,
+            )
+        if record.get("error"):
+            print(f"   Error: {_clip(record.get('error', ''), 180)}", file=out)
+        elif judgment.get("brief_reason"):
+            print(f"   Reason: {_clip(judgment.get('brief_reason', ''), 180)}", file=out)
+    slowest = list(result.get("slowest_items", []))
+    if slowest:
+        print("Slowest items:", file=out)
+        for item in slowest:
+            print(
+                f"- {item.get('item_id', '')}: {item.get('elapsed_ms', 0)}ms "
+                f"{item.get('archive_suitability', '')}/{item.get('confidence', '')} "
+                f"{_clip(item.get('subject', ''), 120)}",
+                file=out,
+            )
+
+
+def _print_eval_archive_shadow(result: dict[str, Any], out: TextIO) -> None:
+    evaluation = result.get("evaluation", {})
+    metrics = evaluation.get("metrics", {})
+    readiness = evaluation.get("readiness", {})
+    thresholds = readiness.get("thresholds", {})
+    print(f"Labels file: {result.get('labels_path', '')}", file=out)
+    print(f"Shadow file: {result.get('shadow_path', '')}", file=out)
+    print(
+        f"Label sample count: {evaluation.get('label_sample_count', 0)}, "
+        f"matched: {evaluation.get('matched_count', 0)}, decisive: {evaluation.get('decisive_count', 0)}",
+        file=out,
+    )
+    print(f"Prediction counts: {evaluation.get('prediction_counts', {})}", file=out)
+    for key in sorted(metrics):
+        print(f"{key}: {metrics[key]}", file=out)
+    if readiness:
+        print("Readiness:", file=out)
+        print(f"  ready_for_policy_experiment: {bool(readiness.get('ready_for_policy_experiment', False))}", file=out)
+        print(f"  recommendation: {readiness.get('recommendation', '')}", file=out)
+        print(
+            "  gates: "
+            f"decisive>={thresholds.get('min_decisive_labels', 0)}, "
+            f"precision>={thresholds.get('target_archive_yes_precision', 0)}, "
+            f"false_positive<={thresholds.get('max_false_positive_count', 0)}, "
+            f"avg_latency<={thresholds.get('max_avg_latency_ms', 0)}ms",
+            file=out,
+        )
+        print(
+            "  status: "
+            f"labels={bool(readiness.get('decisive_labels_ready', False))}, "
+            f"prediction={bool(readiness.get('prediction_ready', False))}, "
+            f"precision={bool(readiness.get('precision_ready', False))}, "
+            f"false_positive={bool(readiness.get('false_positive_ready', False))}, "
+            f"errors={bool(readiness.get('error_ready', False))}, "
+            f"latency={bool(readiness.get('latency_ready', False))}",
+            file=out,
+        )
+        for note in readiness.get("notes", [])[:3]:
+            print(f"  note: {note}", file=out)
+    for title, key in (
+        ("False positive shadow", "false_positive_shadow"),
+        ("Missed archive shadow", "missed_archive_shadow"),
+        ("Unsure shadow", "unsure_shadow"),
+    ):
+        rows = list(evaluation.get(key, []))
+        print(f"{title}: {len(rows)}", file=out)
+        for item in rows[:10]:
+            print(f"- {item.get('item_id', '')}: {_clip(item.get('subject', ''), 140)}", file=out)
+
+
 def _print_observed_memory(result: dict[str, Any], out: TextIO) -> None:
     report = result.get("report", {})
     limit = max(1, int(result.get("limit", 20)))
@@ -1305,6 +1826,75 @@ def _print_observed_memory(result: dict[str, Any], out: TextIO) -> None:
             f"archive_rate={item.get('archive_rate', 0.0)}",
             file=out,
         )
+
+
+def _print_memory_proposals(result: dict[str, Any], out: TextIO) -> None:
+    print(f"Labels file: {result.get('labels_path', '')}", file=out)
+    print(f"Memory file: {result.get('memory_path', '')}", file=out)
+    print(
+        f"Created: {result.get('created_count', 0)}, updated: {result.get('updated_count', 0)}, "
+        f"total: {result.get('total_count', 0)}, listed: {result.get('count', 0)}",
+        file=out,
+    )
+    print(
+        f"Mailbox mutation: {bool(result.get('mailbox_mutation', False))}, "
+        f"policy mutation: {bool(result.get('policy_mutation', False))}",
+        file=out,
+    )
+    _print_memory_items(result.get("proposals", []), out)
+    print("Confirmed memory:", file=out)
+    _print_confirmed_memory_block(result.get("confirmed_memory", {}), out)
+
+
+def _print_memory_items(items: list[dict[str, Any]], out: TextIO) -> None:
+    for index, item in enumerate(items, start=1):
+        print(
+            f"{index}. {item.get('proposal_id', '')} "
+            f"[{item.get('status', '')}/{item.get('confidence', '')}] "
+            f"{item.get('memory_type', '')}={item.get('value', '')} "
+            f"archive={item.get('archive_count', 0)}/{item.get('sample_count', 0)} "
+            f"keep={item.get('keep_count', 0)} "
+            f"rate={item.get('archive_rate', 0.0)} "
+            f"policy_applied={bool(item.get('applied_to_policy', False))}",
+            file=out,
+        )
+        for example in list(item.get("examples", []))[:2]:
+            print(
+                f"   - {example.get('item_type', '')} {example.get('label', '')}: "
+                f"{_clip(example.get('subject', ''), 120)}",
+                file=out,
+            )
+
+
+def _print_memory_decision(command: str, result: dict[str, Any], out: TextIO) -> None:
+    proposal = result.get("proposal", {})
+    print(f"Action: {command}", file=out)
+    print(f"Memory file: {result.get('memory_path', '')}", file=out)
+    print(f"Proposal: {proposal.get('proposal_id', '')}", file=out)
+    print(f"Status: {proposal.get('status', '')}", file=out)
+    print(f"Memory: {proposal.get('memory_type', '')}={proposal.get('value', '')}", file=out)
+    print(f"Applied to policy: {bool(proposal.get('applied_to_policy', False))}", file=out)
+    print("Confirmed memory:", file=out)
+    _print_confirmed_memory_block(result.get("confirmed_memory", {}), out)
+
+
+def _print_confirmed_memory(result: dict[str, Any], out: TextIO) -> None:
+    print(f"Memory file: {result.get('memory_path', '')}", file=out)
+    print(
+        f"Mailbox mutation: {bool(result.get('mailbox_mutation', False))}, "
+        f"policy mutation: {bool(result.get('policy_mutation', False))}",
+        file=out,
+    )
+    print(f"Approved proposal count: {result.get('count', 0)}", file=out)
+    _print_confirmed_memory_block(result.get("confirmed_memory", {}), out)
+
+
+def _print_confirmed_memory_block(confirmed: dict[str, Any], out: TextIO) -> None:
+    for key in ("archive_senders", "archive_domains", "archive_categories"):
+        values = list(confirmed.get(key, []))
+        print(f"- {key}: {len(values)}", file=out)
+        for value in values[:10]:
+            print(f"  - {value}", file=out)
 
 
 def _print_proposal_decision(command: str, result: dict[str, Any], out: TextIO) -> None:
@@ -1398,6 +1988,150 @@ def _mailbox_label(status: dict[str, Any], key: str) -> str:
 
 def _review_label_items(result: dict[str, Any]) -> list[dict[str, Any]]:
     return [*list(result.get("proposals", [])), *list(result.get("candidates", []))]
+
+
+def _shadow_item_from_label(label: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "item_id": str(label.get("item_id", "")),
+        "item_type": str(label.get("item_type", "")),
+        "proposal_id": str(label.get("proposal_id", "")),
+        "candidate_id": str(label.get("candidate_id", "")),
+        "email_id": str(label.get("email_id", "")),
+        "action": str(label.get("action", "archive") or "archive"),
+        "risk_level": str(label.get("risk_level", "")),
+        "source": str(label.get("source", "")),
+        "from_name": str(label.get("from_name", "")),
+        "from_email": str(label.get("from_email", "")),
+        "subject": str(label.get("subject", "")),
+        "snippet": str(label.get("snippet", "")),
+        "category": str(label.get("category", "")),
+        "importance": str(label.get("importance", "")),
+        "suggested_action": str(label.get("suggested_action", "")),
+        "policy_decision": str(label.get("policy_decision", "")),
+        "policy_reason": str(label.get("reason", "")),
+    }
+
+
+def _email_for_archive_shadow(args: argparse.Namespace, runtime: Any, item: dict[str, Any]) -> dict[str, Any]:
+    if str(item.get("snippet", "")).strip() or not bool(getattr(args, "fetch_missing_snippet", False)):
+        return _email_summary_from_label_item(item)
+    detail = _execute_tool(
+        runtime,
+        "email_get_detail",
+        {"email_id": item["email_id"], "max_body_chars": 200},
+        session_id=args.session_id,
+    )
+    if not detail.get("ok"):
+        raise RuntimeError(str(detail.get("error", "email_get_detail failed")))
+    return _email_summary_without_body(detail["result"].get("email", {}))
+
+
+def _email_summary_from_label_item(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(item.get("email_id", "")),
+        "from_name": str(item.get("from_name", "")),
+        "from_email": str(item.get("from_email", "")),
+        "subject": str(item.get("subject", "")),
+        "snippet": str(item.get("snippet", "")),
+        "received_at": "",
+        "is_read": False,
+        "has_attachments": False,
+    }
+
+
+def _archive_shadow_model_name(model: str) -> str:
+    load_server_env()
+    return (model.strip() or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip()
+
+
+def _usable_archive_shadow_cache(record: Any, model: str) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if str(record.get("model", "")) != model:
+        return False
+    if str(record.get("error", "")):
+        return False
+    judgment = record.get("judgment")
+    if not isinstance(judgment, dict):
+        return False
+    return str(judgment.get("archive_suitability", "")) in {"yes", "no", "unsure"}
+
+
+def _print_shadow_progress(args: argparse.Namespace, message: str) -> None:
+    out = getattr(args, "_progress_out", None)
+    if out is not None:
+        print(message, file=out, flush=True)
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return int((time.perf_counter() - started_at) * 1000)
+
+
+def _average_ms(values: list[int]) -> int:
+    if not values:
+        return 0
+    return int(sum(values) / len(values))
+
+
+def _slowest_shadow_items(records: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
+    scored = [
+        record
+        for record in records
+        if not record.get("cached") and int(record.get("elapsed_ms", 0)) > 0
+    ]
+    slowest = sorted(scored, key=lambda item: int(item.get("elapsed_ms", 0)), reverse=True)[:limit]
+    return [
+        {
+            "item_id": record.get("item_id", ""),
+            "email_id": record.get("email_id", ""),
+            "elapsed_ms": int(record.get("elapsed_ms", 0)),
+            "archive_suitability": (record.get("judgment") or {}).get("archive_suitability", ""),
+            "confidence": (record.get("judgment") or {}).get("confidence", ""),
+            "subject": record.get("subject", ""),
+            "error": record.get("error", ""),
+        }
+        for record in slowest
+    ]
+
+
+def _archive_shadow_dry_run_record(
+    *,
+    item: dict[str, Any],
+    email: dict[str, Any],
+    model: str,
+    diagnostics: dict[str, Any],
+    elapsed_ms: int,
+    error: str = "",
+) -> dict[str, Any]:
+    item_id = _proposal_item_id(item)
+    return {
+        "result_id": "",
+        "item_id": item_id,
+        "item_type": str(item.get("item_type", "")),
+        "email_id": str(item.get("email_id", "")),
+        "subject": str(item.get("subject") or email.get("subject", "")),
+        "from_email": str(item.get("from_email") or email.get("from_email", "")),
+        "policy_bucket": str(item.get("policy_decision") or item.get("item_type", "")),
+        "model": model,
+        "scored_at": "",
+        "shadow_input": {},
+        "judgment": {
+            "archive_suitability": "",
+            "confidence": "",
+            "reason_codes": [],
+            "brief_reason": "",
+        },
+        "error": error,
+        "elapsed_ms": max(0, int(elapsed_ms)),
+        "diagnostics": dict(diagnostics or {}),
+        "dry_run": True,
+        "mailbox_mutation": False,
+        "proposal_mutation": False,
+    }
+
+
+def _email_summary_without_body(email: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in dict(email).items() if "body" not in str(key).lower()}
 
 
 def _proposal_item_id(item: dict[str, Any]) -> str:

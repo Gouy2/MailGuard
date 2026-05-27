@@ -24,12 +24,15 @@ class ArchiveProposalPolicy:
         email: EmailMessage,
         decision: dict[str, Any],
         preferences: dict[str, Any],
+        *,
+        confirmed_memory: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         category = str(decision.get("category", "")).strip().lower()
         importance = str(decision.get("importance", "")).strip().lower()
         suggested_action = str(decision.get("suggested_action", "")).strip().lower()
         positive_signals = list((decision.get("signals") or {}).get("positive") or [])
         important_preferences = list(((decision.get("signals") or {}).get("preferences") or {}).get("important") or [])
+        archive_memory_match = _sender_archive_memory_match(email, confirmed_memory or {})
 
         if category in PROTECTED_CATEGORIES or bool(decision.get("is_reportable")):
             return _policy_result(
@@ -49,6 +52,14 @@ class ArchiveProposalPolicy:
 
         if positive_signals:
             if _is_archive_candidate(decision):
+                if archive_memory_match:
+                    return _policy_result(
+                        "propose_archive",
+                        "confirmed memory promotes low-value candidate to archive proposal",
+                        category=category,
+                        importance=importance,
+                        memory_match=archive_memory_match,
+                    )
                 return _policy_result(
                     "candidate",
                     "low-value mail has positive signals, needs user feedback before proposal",
@@ -71,6 +82,14 @@ class ArchiveProposalPolicy:
             )
 
         if bool(decision.get("is_ignored")):
+            if archive_memory_match:
+                return _policy_result(
+                    "propose_archive",
+                    "confirmed memory promotes ignored mail to archive proposal",
+                    category=category,
+                    importance=importance,
+                    memory_match=archive_memory_match,
+                )
             return _policy_result(
                 "candidate",
                 "ignored mail did not satisfy strict archive proposal policy",
@@ -95,6 +114,7 @@ def scan_action_proposals(
     limit: int = 20,
     unread_only: bool = True,
     policy: ArchiveProposalPolicy | None = None,
+    confirmed_memory: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     policy = policy or ArchiveProposalPolicy()
     preferences = memory_store.email_preferences(session_id)
@@ -109,7 +129,7 @@ def scan_action_proposals(
 
     for email in emails:
         decision = classifier(email, preferences)
-        policy_decision = policy.evaluate(email, decision, preferences)
+        policy_decision = policy.evaluate(email, decision, preferences, confirmed_memory=confirmed_memory or {})
         bucket = policy_decision["decision"]
         if bucket == "propose_archive":
             proposal = _archive_proposal(email, decision, policy_decision)
@@ -343,6 +363,7 @@ def _archive_proposal(
         "subject": email.subject,
         "from_email": email.from_email,
         "from_name": email.from_name,
+        "snippet": email.snippet,
         "source": "policy_rule",
         "risk_level": "low",
         "status": "proposed",
@@ -399,6 +420,7 @@ def _candidate_item(
         "from_name": item.get("from_name", ""),
         "from_email": item.get("from_email", ""),
         "subject": item.get("subject", ""),
+        "snippet": email.snippet,
         "category": item.get("category", ""),
         "importance": item.get("importance", ""),
         "suggested_action": item.get("suggested_action", ""),
@@ -410,6 +432,7 @@ def _candidate_item(
 def _proposal_summary(proposal: dict[str, Any]) -> dict[str, Any]:
     evidence = dict(proposal.get("evidence") or {})
     classification = dict(evidence.get("classification") or {})
+    email = dict(evidence.get("email") or {})
     policy = dict(evidence.get("policy") or {})
     return {
         "proposal_id": proposal.get("proposal_id", ""),
@@ -421,6 +444,7 @@ def _proposal_summary(proposal: dict[str, Any]) -> dict[str, Any]:
         "email_id": proposal.get("email_id", ""),
         "thread_id": proposal.get("thread_id", ""),
         "subject": proposal.get("subject", ""),
+        "snippet": proposal.get("snippet", "") or email.get("snippet", ""),
         "from_email": proposal.get("from_email", ""),
         "from_name": proposal.get("from_name", ""),
         "category": classification.get("category", ""),
@@ -449,12 +473,14 @@ def _policy_result(
     *,
     category: str,
     importance: str,
+    memory_match: str = "",
 ) -> dict[str, Any]:
     return {
         "decision": decision,
         "reason": reason,
         "category": category,
         "importance": importance,
+        "memory_match": memory_match,
     }
 
 
@@ -465,6 +491,18 @@ def _sender_has_important_preference(email: EmailMessage, preferences: dict[str,
         from_email in _normalized_preferences(preferences, "important_senders")
         or _matching_domain(domain, _normalized_preferences(preferences, "important_domains"))
     )
+
+
+def _sender_archive_memory_match(email: EmailMessage, confirmed_memory: dict[str, Any]) -> str:
+    from_email = email.from_email.strip().lower()
+    domain = _email_domain(from_email)
+    if from_email in _normalized_preferences(confirmed_memory, "archive_senders"):
+        return f"archive_sender:{from_email}"
+    domains = _normalized_preferences(confirmed_memory, "archive_domains")
+    matched_domain = next((preferred for preferred in domains if _matching_domain(domain, {preferred})), "")
+    if matched_domain:
+        return f"archive_domain:{matched_domain}"
+    return ""
 
 
 def _normalized_preferences(preferences: dict[str, Any], key: str) -> set[str]:

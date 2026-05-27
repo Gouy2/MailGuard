@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 from .email_eval import evaluate_email_classifier
@@ -24,13 +26,16 @@ from .email_scheduler import (
     run_email_scan,
 )
 from .llm_email_classifier import LLMEmailClassifier
+from .memory_proposals import confirmed_memory_from_store, load_memory_proposals
 from .proposal_eval import evaluate_archive_proposal_policy
+from .runtime_env import SERVER_ROOT, load_server_env
 from .tools import ToolContext, ToolPermission, ToolRegistry, ToolSpec, _normalize_relative_path
 
 
 LOW_VALUE_CATEGORIES = {"newsletter", "promotion", "noise"}
 REPORTABLE_IMPORTANCE = {"high", "medium"}
 REPORT_OUTPUT_ROOT = "docs/test-logs"
+DEFAULT_MEMORY_PROPOSAL_PATH = SERVER_ROOT / "data" / "memory_proposals.json"
 
 SECURITY_TERMS = (
     "security",
@@ -134,6 +139,15 @@ BULK_LOCAL_PARTS = (
     "deals",
     "notification",
 )
+
+
+def _confirmed_memory_for_scan() -> dict[str, Any]:
+    load_server_env()
+    raw_path = os.environ.get("MAILGUARD_MEMORY_PROPOSALS", "").strip()
+    if raw_path.lower() in {"0", "false", "off", "disabled", "none"}:
+        return {}
+    path = Path(raw_path).expanduser() if raw_path else DEFAULT_MEMORY_PROPOSAL_PATH
+    return confirmed_memory_from_store(load_memory_proposals(path))
 
 
 def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None = None) -> None:
@@ -382,6 +396,7 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
             classifier=classify_email,
             limit=limit,
             unread_only=unread_only,
+            confirmed_memory=_confirmed_memory_for_scan(),
         )
 
     def email_list_proposals(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:

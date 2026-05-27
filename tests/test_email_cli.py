@@ -501,6 +501,372 @@ class EmailCliTests(unittest.TestCase):
         self.assertIn("archive_friendly sender=notification@facebookmail.example", output)
         self.assertIn("archive_sender=notification@facebookmail.example", output)
 
+    def test_memory_proposal_commands_confirm_local_memory_only(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            labels_path = Path(temp_dir) / "real_proposal_labels.json"
+            memory_path = Path(temp_dir) / "memory_proposals.json"
+            for suffix in ("001", "002"):
+                save_real_proposal_label(
+                    labels_path,
+                    proposal={
+                        "candidate_id": f"candidate-{suffix}",
+                        "item_type": "candidate",
+                        "email_id": f"email-{suffix}",
+                        "from_email": "notification@facebookmail.example",
+                        "subject": f"Facebook notification {suffix}",
+                        "category": "notification",
+                        "action": "archive",
+                    },
+                    label="archive",
+                )
+            runtime = FakeCliRuntime([])
+            stdout = StringIO()
+
+            exit_code = run_cli(
+                [
+                    "memory-proposals",
+                    "--labels-path",
+                    str(labels_path),
+                    "--memory-path",
+                    str(memory_path),
+                    "--min-samples",
+                    "2",
+                ],
+                runtime_factory=lambda: runtime,
+                stdout=stdout,
+                stderr=StringIO(),
+            )
+            data = json.loads(memory_path.read_text(encoding="utf-8"))
+            sender_id = next(
+                proposal_id
+                for proposal_id, proposal in data["proposals"].items()
+                if proposal["memory_type"] == "archive_sender"
+            )
+            approve_stdout = StringIO()
+            approve_exit = run_cli(
+                ["approve-memory", sender_id, "--memory-path", str(memory_path)],
+                runtime_factory=lambda: FakeCliRuntime([]),
+                stdout=approve_stdout,
+                stderr=StringIO(),
+            )
+            confirmed_stdout = StringIO()
+            confirmed_exit = run_cli(
+                ["confirmed-memory", "--memory-path", str(memory_path)],
+                runtime_factory=lambda: FakeCliRuntime([]),
+                stdout=confirmed_stdout,
+                stderr=StringIO(),
+            )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual([], runtime.execute_calls)
+        self.assertIn("policy mutation: False", stdout.getvalue())
+        self.assertIn("archive_sender=notification@facebookmail.example", stdout.getvalue())
+        self.assertEqual(0, approve_exit)
+        self.assertIn("Applied to policy: True", approve_stdout.getvalue())
+        self.assertEqual(0, confirmed_exit)
+        self.assertIn("archive_senders: 1", confirmed_stdout.getvalue())
+        self.assertIn("notification@facebookmail.example", confirmed_stdout.getvalue())
+
+    def test_llm_archive_shadow_scores_candidates_without_body_or_mutation(self) -> None:
+        class FakeArchiveScorer:
+            instances = []
+
+            def __init__(self, *, model=None, timeout=30.0, max_retries=1):
+                self.model = model or "fake-shadow-model"
+                self.inputs = []
+                FakeArchiveScorer.instances.append(self)
+
+            def score(self, shadow_input):
+                self.inputs.append(shadow_input)
+                payload = json.dumps(shadow_input, ensure_ascii=False)
+                self_test.assertNotIn("Sensitive body", payload)
+                self_test.assertFalse(shadow_input["safety_constraints"]["body_included"])
+                self_test.assertEqual("You have new notifications.", shadow_input["email"]["snippet"])
+                return {
+                    "archive_suitability": "yes",
+                    "confidence": "high",
+                    "reason_codes": ["confirmed_sender"],
+                    "brief_reason": "Sender is consistently archive-friendly.",
+                }
+
+        self_test = self
+        with TemporaryDirectory() as temp_dir:
+            shadow_path = Path(temp_dir) / "archive_shadow_results.json"
+            memory_path = Path(temp_dir) / "memory_proposals.json"
+            labels_path = Path(temp_dir) / "real_proposal_labels.json"
+            memory_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "proposals": {
+                            "memory-1": {
+                                "status": "approved",
+                                "memory_type": "archive_sender",
+                                "value": "notification@facebookmail.example",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            save_real_proposal_label(
+                labels_path,
+                proposal={
+                    "candidate_id": "candidate-imap-1-archive",
+                    "item_type": "candidate",
+                    "email_id": "imap-1",
+                    "from_email": "notification@facebookmail.example",
+                    "subject": "Facebook notification",
+                    "snippet": "You have new notifications.",
+                    "category": "noise",
+                    "importance": "low",
+                    "suggested_action": "ignore",
+                    "action": "archive",
+                },
+                label="archive",
+            )
+            runtime = FakeCliRuntime([])
+            stdout = StringIO()
+            with patch("server.email_cli.ArchiveSuitabilityScorer", FakeArchiveScorer):
+                exit_code = run_cli(
+                    [
+                        "llm-archive-shadow",
+                        "--limit",
+                        "2",
+                        "--labels-path",
+                        str(labels_path),
+                        "--shadow-path",
+                        str(shadow_path),
+                        "--memory-path",
+                        str(memory_path),
+                    ],
+                    runtime_factory=lambda: runtime,
+                    stdout=stdout,
+                    stderr=StringIO(),
+                )
+            eval_stdout = StringIO()
+            eval_exit = run_cli(
+                [
+                    "eval-archive-shadow",
+                    "--labels-path",
+                    str(labels_path),
+                    "--shadow-path",
+                    str(shadow_path),
+                ],
+                runtime_factory=lambda: FakeCliRuntime([]),
+                stdout=eval_stdout,
+                stderr=StringIO(),
+            )
+            shadow_data = json.loads(shadow_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual([], runtime.execute_calls)
+        self.assertEqual(1, len(FakeArchiveScorer.instances[0].inputs))
+        output = stdout.getvalue()
+        self.assertIn("Mailbox mutation: False, proposal mutation: False", output)
+        self.assertIn("candidate-imap-1-archive", shadow_data["results"])
+        self.assertNotIn("Sensitive body", json.dumps(shadow_data, ensure_ascii=False))
+        self.assertEqual(0, eval_exit)
+        self.assertIn("archive_yes_precision: 1.0", eval_stdout.getvalue())
+        self.assertIn("Readiness:", eval_stdout.getvalue())
+        self.assertIn("recommendation: collect_more_labels", eval_stdout.getvalue())
+
+    def test_llm_archive_shadow_skips_cached_results_without_openai_client(self) -> None:
+        class FailingArchiveScorer:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("cached shadow results should not initialize the LLM scorer")
+
+        with TemporaryDirectory() as temp_dir:
+            shadow_path = Path(temp_dir) / "archive_shadow_results.json"
+            labels_path = Path(temp_dir) / "real_proposal_labels.json"
+            save_real_proposal_label(
+                labels_path,
+                proposal={
+                    "candidate_id": "candidate-imap-1-archive",
+                    "item_type": "candidate",
+                    "email_id": "imap-1",
+                    "from_email": "notification@facebookmail.example",
+                    "subject": "Facebook notification",
+                    "snippet": "You have new notifications.",
+                    "category": "noise",
+                    "importance": "low",
+                    "suggested_action": "ignore",
+                    "action": "archive",
+                },
+                label="archive",
+            )
+            shadow_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "results": {
+                            "candidate-imap-1-archive": {
+                                "item_id": "candidate-imap-1-archive",
+                                "item_type": "candidate",
+                                "email_id": "imap-1",
+                                "subject": "Facebook notification",
+                                "from_email": "notification@facebookmail.example",
+                                "policy_bucket": "candidate",
+                                "model": "gpt-4o-mini",
+                                "scored_at": "2026-05-26T00:00:00+00:00",
+                                "shadow_input": {},
+                                "judgment": {
+                                    "archive_suitability": "yes",
+                                    "confidence": "high",
+                                    "reason_codes": ["cached"],
+                                    "brief_reason": "Already scored.",
+                                },
+                                "error": "",
+                                "elapsed_ms": 1234,
+                                "mailbox_mutation": False,
+                                "proposal_mutation": False,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runtime = FakeCliRuntime([])
+            stdout = StringIO()
+            stderr = StringIO()
+            with patch.dict(os.environ, {"OPENAI_MODEL": ""}), patch(
+                "server.email_cli.ArchiveSuitabilityScorer",
+                FailingArchiveScorer,
+            ):
+                exit_code = run_cli(
+                    [
+                        "llm-archive-shadow",
+                        "--labels-path",
+                        str(labels_path),
+                        "--shadow-path",
+                        str(shadow_path),
+                    ],
+                    runtime_factory=lambda: runtime,
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual([], runtime.execute_calls)
+        self.assertIn("scored: 0, skipped: 1, errors: 0", stdout.getvalue())
+        self.assertIn("cached candidate-imap-1-archive", stderr.getvalue())
+
+    def test_llm_archive_shadow_dry_run_prints_input_diagnostics_without_writing_shadow(self) -> None:
+        class FailingArchiveScorer:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("dry-run should not initialize the LLM scorer")
+
+        with TemporaryDirectory() as temp_dir:
+            shadow_path = Path(temp_dir) / "archive_shadow_results.json"
+            labels_path = Path(temp_dir) / "real_proposal_labels.json"
+            save_real_proposal_label(
+                labels_path,
+                proposal={
+                    "candidate_id": "candidate-imap-1-archive",
+                    "item_type": "candidate",
+                    "email_id": "imap-1",
+                    "from_email": "notification@facebookmail.example",
+                    "subject": "Facebook notification",
+                    "snippet": "You have new notifications.",
+                    "category": "noise",
+                    "importance": "low",
+                    "suggested_action": "ignore",
+                    "action": "archive",
+                },
+                label="archive",
+            )
+            runtime = FakeCliRuntime([])
+            stdout = StringIO()
+            stderr = StringIO()
+            with patch("server.email_cli.ArchiveSuitabilityScorer", FailingArchiveScorer):
+                exit_code = run_cli(
+                    [
+                        "llm-archive-shadow",
+                        "--labels-path",
+                        str(labels_path),
+                        "--shadow-path",
+                        str(shadow_path),
+                        "--dry-run",
+                    ],
+                    runtime_factory=lambda: runtime,
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+
+        self.assertEqual(0, exit_code)
+        self.assertFalse(shadow_path.exists())
+        output = stdout.getvalue()
+        self.assertIn("dry-run: 1, scored: 0", output)
+        self.assertIn("Input: prompt=", output)
+        self.assertIn("body_included=False", output)
+        self.assertNotIn("Sensitive body", output)
+        self.assertIn("dry-run done candidate-imap-1-archive", stderr.getvalue())
+
+    def test_llm_archive_shadow_can_fetch_missing_snippet_for_old_labels(self) -> None:
+        class FailingArchiveScorer:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("dry-run should not initialize the LLM scorer")
+
+        with TemporaryDirectory() as temp_dir:
+            shadow_path = Path(temp_dir) / "archive_shadow_results.json"
+            labels_path = Path(temp_dir) / "real_proposal_labels.json"
+            save_real_proposal_label(
+                labels_path,
+                proposal={
+                    "candidate_id": "candidate-imap-1-archive",
+                    "item_type": "candidate",
+                    "email_id": "imap-1",
+                    "from_email": "notification@facebookmail.example",
+                    "subject": "Facebook notification",
+                    "category": "noise",
+                    "importance": "low",
+                    "suggested_action": "ignore",
+                    "action": "archive",
+                },
+                label="archive",
+            )
+            runtime = FakeCliRuntime(
+                [
+                    {
+                        "ok": True,
+                        "tool": "email_get_detail",
+                        "result": {
+                            "email": {
+                                "id": "imap-1",
+                                "from_email": "notification@facebookmail.example",
+                                "subject": "Facebook notification",
+                                "snippet": "Fetched snippet for an old label.",
+                                "body": "Sensitive body should not enter diagnostics.",
+                            }
+                        },
+                    }
+                ]
+            )
+            stdout = StringIO()
+            with patch("server.email_cli.ArchiveSuitabilityScorer", FailingArchiveScorer):
+                exit_code = run_cli(
+                    [
+                        "llm-archive-shadow",
+                        "--labels-path",
+                        str(labels_path),
+                        "--shadow-path",
+                        str(shadow_path),
+                        "--dry-run",
+                        "--fetch-missing-snippet",
+                    ],
+                    runtime_factory=lambda: runtime,
+                    stdout=stdout,
+                    stderr=StringIO(),
+                )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [("email_get_detail", {"email_id": "imap-1", "max_body_chars": 200}, "email-cli")],
+            runtime.execute_calls,
+        )
+        self.assertIn("snippet=", stdout.getvalue())
+        self.assertNotIn("Sensitive body", stdout.getvalue())
+
     def test_dangerous_command_without_yes_rejects_pending_preview(self) -> None:
         runtime = FakeCliRuntime(
             execute_results=[

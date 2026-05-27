@@ -45,7 +45,8 @@ Policy + Memory + User Permission: authorize
   - `confirmed_memory`：用户明确确认的偏好，例如 protected sender/domain、archive-friendly sender/domain。
   - `automation_policy`：用户明确授权的自动化规则，未来才可能支持 auto approve/execute。
 - 理由：Memory 不应只是塞进 LLM prompt 的自由文本；它必须同时服务 LLM 和 deterministic policy，并且可审计、可撤销、可测试。
-- 当前状态：已实现只读 observed memory report，从 proposal/candidate 标签中输出 observed-only proposed preferences。
+- 当前状态：已实现只读 observed memory report，以及本地 memory proposal approve/reject；确认后的 `archive_sender` / `archive_domain` 可以把低价值 candidate 提升为 proposal。
+- 约束：confirmed memory 不能覆盖 `protected`，不能绕过 proposal approval；`archive_category` 当前只保存，不参与 policy。
 - 约束：自然语言偏好抽取先生成 `proposed_memory_update`，用户确认后才进入 `confirmed_memory`。
 
 ## 2026-05-26 - 真实写操作必须可追溯
@@ -63,6 +64,13 @@ Policy + Memory + User Permission: authorize
   - 过早接 LLM 会混淆问题来源：prompt、classifier、memory、policy、真实偏好都可能影响结果。
 - 当前状态：candidate expansion 已实现，`review-proposals --label` 可以同时标注 proposal 和 candidate。
 - 后续：收集真实标签后，再让 LLM 读取 observed/confirmed memory 辅助 suitability 判断。
+
+## 2026-05-26 - LLM suitability 先进入 shadow mode
+
+- 决策：archive suitability scorer 先以 shadow mode 落地，不直接改变 proposal policy。
+- 理由：当前 confirmed memory 已经能影响 proposal，如果同时让 LLM 影响 proposal，会混淆真实测试结果来源。Shadow mode 可以先衡量 LLM 对 candidate 召回和误伤的帮助。
+- 约束：默认不向 LLM 发送邮件正文，只发送 subject/from/snippet、规则分类、policy bucket 和 confirmed memory 命中信息。
+- 约束：LLM shadow 结果不创建 proposal、不批准 proposal、不执行邮箱写操作，也不能覆盖 `protected`。
 
 ## 2026-05-26 - 文档瘦身
 
