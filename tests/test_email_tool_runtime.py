@@ -21,7 +21,12 @@ from server.app.agent import AgentRuntime
 from server.app.auth import configured_auth_token, require_api_token
 from server.app.email_eval import evaluate_email_classifier
 from server.app.email_provider import MockEmailProvider
-from server.app.email_proposals import approve_action_proposal, execute_approved_action_proposals, scan_action_proposals
+from server.app.email_proposals import (
+    approve_action_proposal,
+    execute_approved_action_proposals,
+    plan_archive_actions,
+    scan_action_proposals,
+)
 from server.app.email_tools import classify_email
 from server.app.llm_email_classifier import _normalize_decision, _parse_json_object
 from server.app.memory import MemoryStore
@@ -621,6 +626,26 @@ class EmailToolRuntimeTests(unittest.TestCase):
         self.assertTrue(audit["ok"])
         self.assertEqual(result["created_count"], audit["result"]["count"])
         self.assertTrue(all(item["event_type"] == "proposal_created" for item in audit["result"]["events"]))
+
+    def test_plan_archive_actions_is_readonly_and_does_not_persist_proposals(self) -> None:
+        store = MemoryStore()
+        provider = MockEmailProvider()
+        plan = plan_archive_actions(
+            emails=provider.list_recent(limit=12, unread_only=False),
+            classifier=classify_email,
+            preferences=store.email_preferences("plan-only"),
+            provider_name=type(provider).__name__,
+        )
+
+        self.assertEqual("MockEmailProvider", plan["provider"])
+        self.assertEqual(12, plan["fetched"])
+        self.assertEqual(3, plan["planned_count"])
+        self.assertIn("planned", plan)
+        self.assertFalse(plan["mailbox_mutation"])
+        self.assertFalse(plan["state_mutation"])
+        self.assertEqual([], store.action_proposals("plan-only"))
+        self.assertEqual([], store.action_audit_events("plan-only"))
+        self.assertTrue(all("proposal_id" not in item for item in plan["planned"]))
 
     def test_large_proposal_scan_keeps_structured_result(self) -> None:
         response = self.runtime.execute_tool_for_test(

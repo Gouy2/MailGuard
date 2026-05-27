@@ -1,6 +1,6 @@
 # 架构决策
 
-更新时间：2026-05-26
+更新时间：2026-05-27
 
 ## 2026-05-26 - 项目定位
 
@@ -71,6 +71,13 @@ Policy + Memory + User Permission: authorize
 - 理由：当前 confirmed memory 已经能影响 proposal，如果同时让 LLM 影响 proposal，会混淆真实测试结果来源。Shadow mode 可以先衡量 LLM 对 candidate 召回和误伤的帮助。
 - 约束：默认不向 LLM 发送邮件正文，只发送 subject/from/snippet、规则分类、policy bucket 和 confirmed memory 命中信息。
 - 约束：LLM shadow 结果不创建 proposal、不批准 proposal、不执行邮箱写操作，也不能覆盖 `protected`。
+
+## 2026-05-27 - Proposal scan 拆出无副作用计划层
+
+- 决策：把 archive proposal scan 拆成 `plan_archive_actions` 和 `scan_action_proposals` 两层。
+- 含义：`plan_archive_actions` 只做 `planned` / `candidate` / `protected` / `no_action` 分桶，不落库、不写 audit；`scan_action_proposals` 复用计划结果，把 `planned` 持久化为正式 proposal。
+- 理由：automation preview 需要复用同一套 policy，但不能触发 proposal 创建和 audit 副作用；先拆领域边界，避免继续把新功能叠到带副作用的 scan 上。
+- 约束：本次保持 CLI/API 外部行为兼容，不改 proposal 状态机，不引入自动执行。
 
 ## 2026-05-26 - 文档瘦身
 

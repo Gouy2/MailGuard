@@ -111,13 +111,16 @@ QQ/Foxmail 写操作：
 email_scan_proposals
 -> classify_email
 -> ArchiveProposalPolicy
--> protected / candidate / proposal / no_action
--> create ActionProposal for proposal only
+-> plan_archive_actions
+-> planned / protected / candidate / no_action
+-> create ActionProposal for planned only
 -> proposal_created audit event for proposal only
 -> user approve/reject
 -> execute approved archive
 -> execution audit event
 ```
+
+`plan_archive_actions` 是无副作用计划层：它只把邮件分到 `planned`、`candidate`、`protected`、`no_action`，不落库、不写 audit、不修改邮箱。`email_scan_proposals` 在这个计划层之上，把 `planned` 持久化成正式 `proposal`。
 
 当前 policy 是 precision-first，并显式区分学习层和执行层：
 

@@ -116,41 +116,84 @@ def scan_action_proposals(
     policy: ArchiveProposalPolicy | None = None,
     confirmed_memory: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    policy = policy or ArchiveProposalPolicy()
     preferences = memory_store.email_preferences(session_id)
     emails = provider.list_recent(limit=limit, unread_only=unread_only)
+    plan = plan_archive_actions(
+        emails=emails,
+        classifier=classifier,
+        preferences=preferences,
+        policy=policy,
+        confirmed_memory=confirmed_memory,
+        provider_name=type(provider).__name__,
+    )
 
     proposals = []
     created_count = 0
     duplicate_count = 0
+
+    for planned in plan["planned"]:
+        stored = memory_store.create_action_proposal_once(session_id, planned)
+        stored_proposal = stored["proposal"]
+        proposals.append(_proposal_summary(stored_proposal))
+        if stored["created"]:
+            created_count += 1
+            memory_store.add_action_audit_event(
+                session_id,
+                stored_proposal["proposal_id"],
+                "proposal_created",
+                "policy",
+                {
+                    "action": ARCHIVE_ACTION,
+                    "email_id": stored_proposal["email_id"],
+                    "reason": stored_proposal["reason"],
+                },
+            )
+        else:
+            duplicate_count += 1
+
+    protected_items = list(plan["protected"])
+    candidate_items = list(plan["candidates"])
+
+    return {
+        "provider": plan["provider"],
+        "fetched": plan["fetched"],
+        "proposal_count": len(proposals),
+        "created_count": created_count,
+        "duplicate_count": duplicate_count,
+        "proposals": proposals,
+        "protected_count": plan["protected_count"],
+        "protected_returned_count": min(len(protected_items), SCAN_PREVIEW_LIMIT),
+        "protected": protected_items[:SCAN_PREVIEW_LIMIT],
+        "candidate_count": plan["candidate_count"],
+        "candidate_returned_count": min(len(candidate_items), SCAN_PREVIEW_LIMIT),
+        "candidates": candidate_items[:SCAN_PREVIEW_LIMIT],
+        "no_action_count": plan["no_action_count"],
+    }
+
+
+def plan_archive_actions(
+    *,
+    emails: list[EmailMessage],
+    classifier: Classifier,
+    preferences: dict[str, Any] | None = None,
+    policy: ArchiveProposalPolicy | None = None,
+    confirmed_memory: dict[str, Any] | None = None,
+    provider_name: str = "",
+) -> dict[str, Any]:
+    """Classify and bucket emails without creating proposals or audit events."""
+    policy = policy or ArchiveProposalPolicy()
+    preferences = preferences or {}
+    planned = []
     protected_items = []
     candidate_items = []
-    no_action_count = 0
+    no_action_items = []
 
     for email in emails:
         decision = classifier(email, preferences)
         policy_decision = policy.evaluate(email, decision, preferences, confirmed_memory=confirmed_memory or {})
         bucket = policy_decision["decision"]
         if bucket == "propose_archive":
-            proposal = _archive_proposal(email, decision, policy_decision)
-            stored = memory_store.create_action_proposal_once(session_id, proposal)
-            stored_proposal = stored["proposal"]
-            proposals.append(_proposal_summary(stored_proposal))
-            if stored["created"]:
-                created_count += 1
-                memory_store.add_action_audit_event(
-                    session_id,
-                    stored_proposal["proposal_id"],
-                    "proposal_created",
-                    "policy",
-                    {
-                        "action": ARCHIVE_ACTION,
-                        "email_id": email.id,
-                        "reason": stored_proposal["reason"],
-                    },
-                )
-            else:
-                duplicate_count += 1
+            planned.append(_planned_archive_action(email, decision, policy_decision))
             continue
 
         item = _scan_item(email, decision, policy_decision)
@@ -159,22 +202,21 @@ def scan_action_proposals(
         elif bucket == "candidate":
             candidate_items.append(_candidate_item(item, email, decision, policy_decision))
         else:
-            no_action_count += 1
+            no_action_items.append(item)
 
     return {
-        "provider": type(provider).__name__,
+        "provider": provider_name,
         "fetched": len(emails),
-        "proposal_count": len(proposals),
-        "created_count": created_count,
-        "duplicate_count": duplicate_count,
-        "proposals": proposals,
+        "planned_count": len(planned),
+        "planned": planned,
         "protected_count": len(protected_items),
-        "protected_returned_count": min(len(protected_items), SCAN_PREVIEW_LIMIT),
-        "protected": protected_items[:SCAN_PREVIEW_LIMIT],
+        "protected": protected_items,
         "candidate_count": len(candidate_items),
-        "candidate_returned_count": min(len(candidate_items), SCAN_PREVIEW_LIMIT),
-        "candidates": candidate_items[:SCAN_PREVIEW_LIMIT],
-        "no_action_count": no_action_count,
+        "candidates": candidate_items,
+        "no_action_count": len(no_action_items),
+        "no_action": no_action_items,
+        "mailbox_mutation": False,
+        "state_mutation": False,
     }
 
 
@@ -349,7 +391,7 @@ def action_audit_log(
     }
 
 
-def _archive_proposal(
+def _planned_archive_action(
     email: EmailMessage,
     decision: dict[str, Any],
     policy_decision: dict[str, Any],
@@ -366,7 +408,6 @@ def _archive_proposal(
         "snippet": email.snippet,
         "source": "policy_rule",
         "risk_level": "low",
-        "status": "proposed",
         "reason": reason,
         "evidence": {
             "classification": {
