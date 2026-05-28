@@ -21,7 +21,8 @@ FastAPI / CLI
 - `server/app/agent.py`：LLM tool loop、mode control、manual tool execution、approval。
 - `server/app/tools.py`：tool registry、schema validation、权限分级、pending approval。
 - `server/app/email_tools.py`：邮件工具注册、规则分类器、scheduler、eval。
-- `server/app/email_proposals.py`：archive proposal、审批状态流转、approved execution、audit log。
+- `server/app/archive/`：archive plan/action 的 typed models、precision-first policy、无副作用计划构造和 audit payload。
+- `server/app/email_proposals.py`：archive proposal 兼容门面、审批状态流转、approved execution、audit log。
 - `server/app/proposal_eval.py` / `server/app/real_proposal_eval.py`：proposal policy mock eval 和真实 proposal 标签评估。
 - `server/app/email_provider.py` / `server/app/qq_imap_provider.py`：provider 协议、mock provider、QQ/Foxmail IMAP provider。
 - `server/app/memory.py` / `server/app/sqlite_state.py`：进程内状态和可选 SQLite。
@@ -110,8 +111,8 @@ QQ/Foxmail 写操作：
 ```text
 email_scan_proposals
 -> classify_email
+-> archive.build_archive_plan
 -> ArchiveProposalPolicy
--> plan_archive_actions
 -> planned / protected / candidate / no_action
 -> create ActionProposal for planned only
 -> proposal_created audit event for proposal only
@@ -120,7 +121,11 @@ email_scan_proposals
 -> execution audit event
 ```
 
-`plan_archive_actions` 是无副作用计划层：它只把邮件分到 `planned`、`candidate`、`protected`、`no_action`，不落库、不写 audit、不修改邮箱。`email_scan_proposals` 在这个计划层之上，把 `planned` 持久化成正式 `proposal`。
+`server/app/archive/` 是 archive core package：`models.py` 定义 typed plan boundary，`policy.py` 承载 precision-first policy，`plan.py` 构造无副作用 archive plan。
+
+`actions.py` 定义正式 `ActionProposal` / `ActionAuditEvent` 边界，以及 approval、reject、execution success/failure 的状态更新和 audit payload。`MemoryStore` 仍负责进程内/SQLite 持久化，但 proposal/audit 的形状不再散落在 store 和 orchestration 代码里。
+
+`plan_archive_actions` 是兼容入口：它调用 archive core，并输出既有 dict 结构。它只把邮件分到 `planned`、`candidate`、`protected`、`no_action`，不落库、不写 audit、不修改邮箱。`email_scan_proposals` 在这个计划层之上，把 `planned` 持久化成正式 `proposal`。
 
 当前 policy 是 precision-first，并显式区分学习层和执行层：
 
@@ -140,6 +145,12 @@ email_scan_proposals
 - `candidate`：学习层，不执行。
 - `protected`：不能被 LLM 直接推翻。
 - `auto_eligible`：未来用户明确授权后才可能自动执行。
+
+当前状态边界：
+
+- 正式状态：`ActionProposal`、`ActionAuditEvent`、email preferences、notifications、scan history。
+- 开发评估数据：real email labels、real proposal labels、memory proposal review data、LLM shadow results。
+- 临时运行态：pending tool calls、chat history、draft metadata。
 
 ## LLM Shadow Scorer
 

@@ -1,108 +1,38 @@
-"""Action proposal policy, execution, and audit helpers for email triage."""
+"""Action proposal orchestration for email triage."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any, Callable
 
+from .archive import (
+    ARCHIVE_ACTION,
+    AUDIT_EXECUTION_FAILED,
+    AUDIT_EXECUTION_STARTED,
+    AUDIT_EXECUTION_SUCCEEDED,
+    AUDIT_PROPOSAL_APPROVED,
+    AUDIT_PROPOSAL_CREATED,
+    AUDIT_PROPOSAL_REJECTED,
+    SCAN_PREVIEW_LIMIT,
+    STATUS_APPROVED,
+    STATUS_PROPOSED,
+    ArchiveProposalPolicy,
+    action_execution_failed_updates,
+    action_execution_succeeded_updates,
+    approve_action_proposal_updates,
+    build_archive_plan,
+    proposal_created_payload,
+    proposal_decision_payload,
+    proposal_execution_payload,
+    reject_action_proposal_updates,
+    require_action_proposal_status,
+    start_action_execution_updates,
+    summarize_action_proposal,
+)
 from .email_provider import EmailMessage, EmailProvider
 from .memory import MemoryStore
 
 
 Classifier = Callable[[EmailMessage, dict[str, Any] | None], dict[str, Any]]
-ARCHIVE_ACTION = "archive"
-ARCHIVE_CATEGORIES = {"newsletter", "promotion", "noise"}
-PROTECTED_CATEGORIES = {"security", "finance", "meeting", "action_required", "important"}
-SCAN_PREVIEW_LIMIT = 10
-
-
-class ArchiveProposalPolicy:
-    """Small precision-first gate for archive proposals and candidates."""
-
-    def evaluate(
-        self,
-        email: EmailMessage,
-        decision: dict[str, Any],
-        preferences: dict[str, Any],
-        *,
-        confirmed_memory: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        category = str(decision.get("category", "")).strip().lower()
-        importance = str(decision.get("importance", "")).strip().lower()
-        suggested_action = str(decision.get("suggested_action", "")).strip().lower()
-        positive_signals = list((decision.get("signals") or {}).get("positive") or [])
-        important_preferences = list(((decision.get("signals") or {}).get("preferences") or {}).get("important") or [])
-        archive_memory_match = _sender_archive_memory_match(email, confirmed_memory or {})
-
-        if category in PROTECTED_CATEGORIES or bool(decision.get("is_reportable")):
-            return _policy_result(
-                "protected",
-                "protected category or reportable mail",
-                category=category,
-                importance=importance,
-            )
-
-        if _sender_has_important_preference(email, preferences) or important_preferences:
-            return _policy_result(
-                "protected",
-                "sender or domain is protected by important preference",
-                category=category,
-                importance=importance,
-            )
-
-        if positive_signals:
-            if _is_archive_candidate(decision):
-                if archive_memory_match:
-                    return _policy_result(
-                        "propose_archive",
-                        "confirmed memory promotes low-value candidate to archive proposal",
-                        category=category,
-                        importance=importance,
-                        memory_match=archive_memory_match,
-                    )
-                return _policy_result(
-                    "candidate",
-                    "low-value mail has positive signals, needs user feedback before proposal",
-                    category=category,
-                    importance=importance,
-                )
-            return _policy_result(
-                "protected",
-                "positive importance signal blocks automatic archive proposal",
-                category=category,
-                importance=importance,
-            )
-
-        if category in ARCHIVE_CATEGORIES and importance == "low" and suggested_action == "ignore":
-            return _policy_result(
-                "propose_archive",
-                "low-value mail classified as safe to ignore",
-                category=category,
-                importance=importance,
-            )
-
-        if bool(decision.get("is_ignored")):
-            if archive_memory_match:
-                return _policy_result(
-                    "propose_archive",
-                    "confirmed memory promotes ignored mail to archive proposal",
-                    category=category,
-                    importance=importance,
-                    memory_match=archive_memory_match,
-                )
-            return _policy_result(
-                "candidate",
-                "ignored mail did not satisfy strict archive proposal policy",
-                category=category,
-                importance=importance,
-            )
-
-        return _policy_result(
-            "no_action",
-            "no low-risk archive action",
-            category=category,
-            importance=importance,
-        )
 
 
 def scan_action_proposals(
@@ -134,19 +64,15 @@ def scan_action_proposals(
     for planned in plan["planned"]:
         stored = memory_store.create_action_proposal_once(session_id, planned)
         stored_proposal = stored["proposal"]
-        proposals.append(_proposal_summary(stored_proposal))
+        proposals.append(summarize_action_proposal(stored_proposal))
         if stored["created"]:
             created_count += 1
             memory_store.add_action_audit_event(
                 session_id,
                 stored_proposal["proposal_id"],
-                "proposal_created",
+                AUDIT_PROPOSAL_CREATED,
                 "policy",
-                {
-                    "action": ARCHIVE_ACTION,
-                    "email_id": stored_proposal["email_id"],
-                    "reason": stored_proposal["reason"],
-                },
+                proposal_created_payload(stored_proposal),
             )
         else:
             duplicate_count += 1
@@ -181,43 +107,14 @@ def plan_archive_actions(
     provider_name: str = "",
 ) -> dict[str, Any]:
     """Classify and bucket emails without creating proposals or audit events."""
-    policy = policy or ArchiveProposalPolicy()
-    preferences = preferences or {}
-    planned = []
-    protected_items = []
-    candidate_items = []
-    no_action_items = []
-
-    for email in emails:
-        decision = classifier(email, preferences)
-        policy_decision = policy.evaluate(email, decision, preferences, confirmed_memory=confirmed_memory or {})
-        bucket = policy_decision["decision"]
-        if bucket == "propose_archive":
-            planned.append(_planned_archive_action(email, decision, policy_decision))
-            continue
-
-        item = _scan_item(email, decision, policy_decision)
-        if bucket == "protected":
-            protected_items.append(item)
-        elif bucket == "candidate":
-            candidate_items.append(_candidate_item(item, email, decision, policy_decision))
-        else:
-            no_action_items.append(item)
-
-    return {
-        "provider": provider_name,
-        "fetched": len(emails),
-        "planned_count": len(planned),
-        "planned": planned,
-        "protected_count": len(protected_items),
-        "protected": protected_items,
-        "candidate_count": len(candidate_items),
-        "candidates": candidate_items,
-        "no_action_count": len(no_action_items),
-        "no_action": no_action_items,
-        "mailbox_mutation": False,
-        "state_mutation": False,
-    }
+    return build_archive_plan(
+        emails=emails,
+        classifier=classifier,
+        preferences=preferences,
+        policy=policy,
+        confirmed_memory=confirmed_memory,
+        provider_name=provider_name,
+    ).to_dict()
 
 
 def list_action_proposals(
@@ -231,7 +128,7 @@ def list_action_proposals(
     return {
         "count": len(proposals),
         "status": status,
-        "proposals": [_proposal_summary(item) for item in proposals],
+        "proposals": [summarize_action_proposal(item) for item in proposals],
     }
 
 
@@ -243,22 +140,18 @@ def approve_action_proposal(
     actor: str = "user",
 ) -> dict[str, Any]:
     proposal = memory_store.get_action_proposal(session_id, proposal_id)
-    _require_status(proposal, {"proposed"}, "approve")
+    require_action_proposal_status(proposal, {STATUS_PROPOSED}, "approve")
     updated = memory_store.update_action_proposal(
         session_id,
         proposal_id,
-        {
-            "status": "approved",
-            "decided_at": _now(),
-            "error": "",
-        },
+        approve_action_proposal_updates(),
     )
     event = memory_store.add_action_audit_event(
         session_id,
         proposal_id,
-        "proposal_approved",
+        AUDIT_PROPOSAL_APPROVED,
         actor,
-        {"action": updated["action"], "email_id": updated["email_id"]},
+        proposal_decision_payload(updated),
     )
     return {"proposal": updated, "audit_event": event}
 
@@ -272,22 +165,18 @@ def reject_action_proposal(
     reason: str = "",
 ) -> dict[str, Any]:
     proposal = memory_store.get_action_proposal(session_id, proposal_id)
-    _require_status(proposal, {"proposed", "approved"}, "reject")
+    require_action_proposal_status(proposal, {STATUS_PROPOSED, STATUS_APPROVED}, "reject")
     updated = memory_store.update_action_proposal(
         session_id,
         proposal_id,
-        {
-            "status": "rejected",
-            "decided_at": _now(),
-            "error": "",
-        },
+        reject_action_proposal_updates(),
     )
     event = memory_store.add_action_audit_event(
         session_id,
         proposal_id,
-        "proposal_rejected",
+        AUDIT_PROPOSAL_REJECTED,
         actor,
-        {"action": updated["action"], "email_id": updated["email_id"], "reason": reason},
+        proposal_decision_payload(updated, reason=reason),
     )
     return {"proposal": updated, "audit_event": event}
 
@@ -299,7 +188,7 @@ def execute_approved_action_proposals(
     session_id: str,
     limit: int = 20,
 ) -> dict[str, Any]:
-    proposals = memory_store.action_proposals(session_id, status="approved", limit=limit)
+    proposals = memory_store.action_proposals(session_id, status=STATUS_APPROVED, limit=limit)
     executed = []
     failed = []
 
@@ -308,14 +197,14 @@ def execute_approved_action_proposals(
         started = memory_store.update_action_proposal(
             session_id,
             proposal_id,
-            {"status": "executing", "error": ""},
+            start_action_execution_updates(),
         )
         memory_store.add_action_audit_event(
             session_id,
             proposal_id,
-            "execution_started",
+            AUDIT_EXECUTION_STARTED,
             "system",
-            {"action": started["action"], "email_id": started["email_id"]},
+            proposal_execution_payload(started),
         )
         try:
             if started["action"] != ARCHIVE_ACTION:
@@ -325,17 +214,14 @@ def execute_approved_action_proposals(
             updated = memory_store.update_action_proposal(
                 session_id,
                 proposal_id,
-                {
-                    "status": "failed",
-                    "error": f"{type(exc).__name__}: {exc}",
-                },
+                action_execution_failed_updates(exc),
             )
             memory_store.add_action_audit_event(
                 session_id,
                 proposal_id,
-                "execution_failed",
+                AUDIT_EXECUTION_FAILED,
                 "system",
-                {"action": started["action"], "email_id": started["email_id"], "error": updated["error"]},
+                proposal_execution_payload(started, error=updated["error"]),
             )
             failed.append(updated)
             continue
@@ -343,19 +229,14 @@ def execute_approved_action_proposals(
         updated = memory_store.update_action_proposal(
             session_id,
             proposal_id,
-            {
-                "status": "executed",
-                "executed_at": _now(),
-                "result": result,
-                "error": "",
-            },
+            action_execution_succeeded_updates(result),
         )
         memory_store.add_action_audit_event(
             session_id,
             proposal_id,
-            "execution_succeeded",
+            AUDIT_EXECUTION_SUCCEEDED,
             "system",
-            {"action": started["action"], "email_id": started["email_id"], "result": result},
+            proposal_execution_payload(started, result=result),
         )
         executed.append(updated)
 
@@ -389,191 +270,3 @@ def action_audit_log(
         "email_id": email_id,
         "events": events,
     }
-
-
-def _planned_archive_action(
-    email: EmailMessage,
-    decision: dict[str, Any],
-    policy_decision: dict[str, Any],
-) -> dict[str, Any]:
-    reasons = list(decision.get("reasons") or [])
-    reason = "; ".join([policy_decision["reason"], *reasons])
-    return {
-        "action": ARCHIVE_ACTION,
-        "email_id": email.id,
-        "thread_id": email.thread_id,
-        "subject": email.subject,
-        "from_email": email.from_email,
-        "from_name": email.from_name,
-        "snippet": email.snippet,
-        "source": "policy_rule",
-        "risk_level": "low",
-        "reason": reason,
-        "evidence": {
-            "classification": {
-                "category": decision.get("category", ""),
-                "importance": decision.get("importance", ""),
-                "suggested_action": decision.get("suggested_action", ""),
-                "is_reportable": bool(decision.get("is_reportable")),
-                "is_ignored": bool(decision.get("is_ignored")),
-                "reasons": reasons,
-                "signals": decision.get("signals", {}),
-            },
-            "email": email.summary_dict(),
-            "policy": policy_decision,
-        },
-    }
-
-
-def _scan_item(
-    email: EmailMessage,
-    decision: dict[str, Any],
-    policy_decision: dict[str, Any],
-) -> dict[str, Any]:
-    return {
-        "email_id": email.id,
-        "from_name": email.from_name,
-        "from_email": email.from_email,
-        "subject": email.subject,
-        "category": decision.get("category", ""),
-        "importance": decision.get("importance", ""),
-        "suggested_action": decision.get("suggested_action", ""),
-        "policy_decision": policy_decision.get("decision", ""),
-        "policy_reason": policy_decision.get("reason", ""),
-    }
-
-
-def _candidate_item(
-    item: dict[str, Any],
-    email: EmailMessage,
-    decision: dict[str, Any],
-    policy_decision: dict[str, Any],
-) -> dict[str, Any]:
-    reasons = list(decision.get("reasons") or [])
-    return {
-        "candidate_id": f"candidate-{email.id}-archive",
-        "item_type": "candidate",
-        "action": ARCHIVE_ACTION,
-        "risk_level": "candidate",
-        "source": "policy_candidate",
-        "email_id": email.id,
-        "thread_id": email.thread_id,
-        "from_name": item.get("from_name", ""),
-        "from_email": item.get("from_email", ""),
-        "subject": item.get("subject", ""),
-        "snippet": email.snippet,
-        "category": item.get("category", ""),
-        "importance": item.get("importance", ""),
-        "suggested_action": item.get("suggested_action", ""),
-        "reason": "; ".join([policy_decision["reason"], *reasons]),
-        "policy_decision": item.get("policy_decision", ""),
-    }
-
-
-def _proposal_summary(proposal: dict[str, Any]) -> dict[str, Any]:
-    evidence = dict(proposal.get("evidence") or {})
-    classification = dict(evidence.get("classification") or {})
-    email = dict(evidence.get("email") or {})
-    policy = dict(evidence.get("policy") or {})
-    return {
-        "proposal_id": proposal.get("proposal_id", ""),
-        "item_type": "proposal",
-        "action": proposal.get("action", ""),
-        "status": proposal.get("status", ""),
-        "risk_level": proposal.get("risk_level", ""),
-        "source": proposal.get("source", ""),
-        "email_id": proposal.get("email_id", ""),
-        "thread_id": proposal.get("thread_id", ""),
-        "subject": proposal.get("subject", ""),
-        "snippet": proposal.get("snippet", "") or email.get("snippet", ""),
-        "from_email": proposal.get("from_email", ""),
-        "from_name": proposal.get("from_name", ""),
-        "category": classification.get("category", ""),
-        "importance": classification.get("importance", ""),
-        "suggested_action": classification.get("suggested_action", ""),
-        "policy_decision": policy.get("decision", ""),
-        "reason": proposal.get("reason", ""),
-    }
-
-
-def _is_archive_candidate(decision: dict[str, Any]) -> bool:
-    category = str(decision.get("category", "")).strip().lower()
-    importance = str(decision.get("importance", "")).strip().lower()
-    suggested_action = str(decision.get("suggested_action", "")).strip().lower()
-    return (
-        bool(decision.get("is_ignored"))
-        or category in ARCHIVE_CATEGORIES
-        or importance == "low"
-        or suggested_action == "ignore"
-    )
-
-
-def _policy_result(
-    decision: str,
-    reason: str,
-    *,
-    category: str,
-    importance: str,
-    memory_match: str = "",
-) -> dict[str, Any]:
-    return {
-        "decision": decision,
-        "reason": reason,
-        "category": category,
-        "importance": importance,
-        "memory_match": memory_match,
-    }
-
-
-def _sender_has_important_preference(email: EmailMessage, preferences: dict[str, Any]) -> bool:
-    from_email = email.from_email.strip().lower()
-    domain = _email_domain(from_email)
-    return (
-        from_email in _normalized_preferences(preferences, "important_senders")
-        or _matching_domain(domain, _normalized_preferences(preferences, "important_domains"))
-    )
-
-
-def _sender_archive_memory_match(email: EmailMessage, confirmed_memory: dict[str, Any]) -> str:
-    from_email = email.from_email.strip().lower()
-    domain = _email_domain(from_email)
-    if from_email in _normalized_preferences(confirmed_memory, "archive_senders"):
-        return f"archive_sender:{from_email}"
-    domains = _normalized_preferences(confirmed_memory, "archive_domains")
-    matched_domain = next((preferred for preferred in domains if _matching_domain(domain, {preferred})), "")
-    if matched_domain:
-        return f"archive_domain:{matched_domain}"
-    return ""
-
-
-def _normalized_preferences(preferences: dict[str, Any], key: str) -> set[str]:
-    value = preferences.get(key, [])
-    if isinstance(value, str):
-        values = [value]
-    elif isinstance(value, list):
-        values = value
-    else:
-        values = []
-    return {str(item).strip().lower() for item in values if str(item).strip()}
-
-
-def _email_domain(from_email: str) -> str:
-    if "@" not in from_email:
-        return ""
-    return from_email.rsplit("@", 1)[1].strip().lower()
-
-
-def _matching_domain(domain: str, preferred_domains: set[str]) -> bool:
-    if not domain:
-        return False
-    return any(domain == preferred or domain.endswith(f".{preferred}") for preferred in preferred_domains)
-
-
-def _require_status(proposal: dict[str, Any], allowed: set[str], action: str) -> None:
-    status = str(proposal.get("status", ""))
-    if status not in allowed:
-        raise ValueError(f"cannot {action} proposal in status {status}")
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()

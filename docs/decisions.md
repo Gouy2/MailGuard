@@ -86,6 +86,20 @@ Policy + Memory + User Permission: authorize
 - 约束：presets 在 argparse 解析前展开为既有长命令；原命令保持兼容；真实邮箱写操作不提供危险短命令。
 - 约束：现有 `review` / `labels` 保留给 real email label workflow，archive proposal/candidate 使用 `archive-review` / `archive-labels`，避免悄悄改旧语义。
 
+## 2026-05-27 - Archive core 先抽 typed boundary，不做一次性大搬家
+
+- 决策：进入 M1.5 架构稳定化阶段，先建立 `server/app/archive/` core package，承载 typed models、precision-first policy 和无副作用 plan 构造。
+- 理由：当前归档链路已经形成，但 `proposal`、`candidate`、`protected`、`memory`、`shadow` 等概念容易继续散落；先抽核心模型和 plan 边界，可以让后续 agent、API、CLI 复用同一条 pipeline。
+- 约束：`email_proposals.py` 暂时保留为兼容门面和 proposal 状态流转层；外部工具、CLI、测试仍消费既有 dict 结构，避免真实邮箱行为漂移。
+- 后续：继续下沉 action proposal/audit 边界，并区分正式状态与 eval artifact。
+
+## 2026-05-27 - Action proposal/audit 是正式状态，不是 eval artifact
+
+- 决策：把 `ActionProposal`、`ActionAuditEvent`、状态更新和 audit payload 收敛到 `server/app/archive/actions.py`。
+- 理由：proposal approval/execution 是未来自动化信任系统的核心，不能长期散落为手写 dict；统一边界后，CLI、API、agent loop 和未来前端都可以复用同一套状态语义。
+- 约束：`MemoryStore` 和 SQLite 继续负责持久化，不在本轮迁移数据库 schema；外部 dict 结构保持兼容。
+- 后续：real labels、shadow results 等继续作为 eval artifact，不进入正式状态模型；automation policy 落地前不自动执行真实邮箱写操作。
+
 ## 2026-05-26 - 文档瘦身
 
 - 决策：主文档收敛为 `project-state.md`、`decisions.md`、`architecture.md`、`testing-and-evaluation.md`、`test-logs/README.md`。

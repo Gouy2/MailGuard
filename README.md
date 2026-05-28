@@ -30,7 +30,7 @@ scan/search -> classify/filter -> protected/candidate/proposal -> approval -> ex
 
 ```bash
 python3 -m unittest discover -s tests -p 'test*.py'
-python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py
+python3 -m py_compile server/app/*.py server/app/archive/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py
 ```
 
 运行 mock smoke test：

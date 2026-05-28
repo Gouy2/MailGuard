@@ -10,9 +10,9 @@
 
 当前验证快照：
 
-- `python3 -m unittest discover -s tests -p 'test*.py'`：104 tests OK (1 skipped when FastAPI is unavailable in root python)。
-- `python3 -m unittest tests.test_email_tools`：兼容入口仍可加载拆分后的 104 tests，OK (1 skipped when FastAPI is unavailable in root python)。
-- `python3 -m py_compile server/app/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py`：通过。
+- `python3 -m unittest discover -s tests -p 'test*.py'`：107 tests OK (1 skipped when FastAPI is unavailable in root python)。
+- `python3 -m unittest tests.test_email_tools`：兼容入口仍可加载拆分后的 107 tests，OK (1 skipped when FastAPI is unavailable in root python)。
+- `python3 -m py_compile server/app/*.py server/app/archive/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py`：通过。
 - `python3 server/agent_smoke.py`：deterministic mock agent smoke 通过。
 - `cd server && uv run python agent_smoke.py --live`：live LLM mock-provider smoke 通过；模型调用了 `email_report_important`、`email_get_preferences` 和多次 `email_get_detail`，turn status 为 `ok`，未触碰真实邮箱。
 - `cd server && uv run python agent_smoke.py --real-readonly`：真实 QQ/Foxmail read-only agent smoke 通过；provider 为 `QQImapProvider`，`done_status=ok`，使用只读工具，`used_write_tool=false`，输出不含 assistant 邮件摘要。

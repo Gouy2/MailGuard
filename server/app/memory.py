@@ -9,6 +9,8 @@ from threading import RLock
 from typing import Any, Protocol
 import uuid
 
+from .archive import new_action_audit_event, normalize_action_proposal
+
 
 class StateStore(Protocol):
     def clear(self, session_id: str | None = None) -> None: ...
@@ -491,27 +493,7 @@ def _notification_item(notification: dict[str, Any]) -> dict[str, Any]:
 
 
 def _action_proposal_item(proposal: dict[str, Any]) -> dict[str, Any]:
-    now = _now()
-    return {
-        "proposal_id": proposal.get("proposal_id") or f"proposal-{uuid.uuid4().hex[:12]}",
-        "created_at": proposal.get("created_at") or now,
-        "updated_at": proposal.get("updated_at") or now,
-        "status": proposal.get("status", "proposed"),
-        "source": proposal.get("source", "policy_rule"),
-        "risk_level": proposal.get("risk_level", "low"),
-        "action": proposal["action"],
-        "email_id": proposal["email_id"],
-        "thread_id": proposal.get("thread_id", ""),
-        "subject": proposal.get("subject", ""),
-        "from_email": proposal.get("from_email", ""),
-        "from_name": proposal.get("from_name", ""),
-        "reason": proposal.get("reason", ""),
-        "evidence": dict(proposal.get("evidence") or {}),
-        "decided_at": proposal.get("decided_at", ""),
-        "executed_at": proposal.get("executed_at", ""),
-        "error": proposal.get("error", ""),
-        "result": dict(proposal.get("result") or {}),
-    }
+    return normalize_action_proposal(proposal)
 
 
 def _action_audit_event(
@@ -520,11 +502,4 @@ def _action_audit_event(
     actor: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    return {
-        "event_id": f"audit-{uuid.uuid4().hex[:12]}",
-        "proposal_id": proposal_id,
-        "event_type": event_type,
-        "actor": actor,
-        "payload": dict(payload),
-        "created_at": _now(),
-    }
+    return new_action_audit_event(proposal_id, event_type, actor, payload)

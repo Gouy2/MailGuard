@@ -19,6 +19,7 @@ from server.agent_smoke import run_agent_smoke, run_real_pending_write_smoke
 from server.app.agent import _state_db_path
 from server.app.agent import AgentRuntime
 from server.app.auth import configured_auth_token, require_api_token
+from server.app.archive import ActionAuditEvent, ActionProposal, ArchivePlan, build_archive_plan
 from server.app.email_eval import evaluate_email_classifier
 from server.app.email_provider import MockEmailProvider
 from server.app.email_proposals import (
@@ -646,6 +647,84 @@ class EmailToolRuntimeTests(unittest.TestCase):
         self.assertEqual([], store.action_proposals("plan-only"))
         self.assertEqual([], store.action_audit_events("plan-only"))
         self.assertTrue(all("proposal_id" not in item for item in plan["planned"]))
+
+    def test_archive_core_plan_has_typed_boundary_and_dict_compatibility(self) -> None:
+        provider = MockEmailProvider()
+        emails = provider.list_recent(limit=12, unread_only=False)
+
+        core_plan = build_archive_plan(
+            emails=emails,
+            classifier=classify_email,
+            preferences={},
+            provider_name=type(provider).__name__,
+        )
+
+        self.assertIsInstance(core_plan, ArchivePlan)
+        self.assertEqual(12, core_plan.fetched)
+        self.assertEqual(3, core_plan.planned_count)
+        self.assertEqual("email-033", core_plan.planned[0].email.email_id)
+        self.assertEqual("propose_archive", core_plan.planned[0].policy.decision)
+
+        compatible = core_plan.to_dict()
+        self.assertEqual(3, compatible["planned_count"])
+        self.assertFalse(compatible["mailbox_mutation"])
+        self.assertFalse(compatible["state_mutation"])
+        self.assertTrue(all("proposal_id" not in item for item in compatible["planned"]))
+
+    def test_archive_core_keeps_raw_classification_evidence_separate_from_policy_normalization(self) -> None:
+        provider = MockEmailProvider()
+
+        def uppercase_classifier(email: Any, preferences: dict[str, Any] | None) -> dict[str, Any]:
+            return {
+                "category": "Newsletter",
+                "importance": "LOW",
+                "suggested_action": "IGNORE",
+                "is_reportable": False,
+                "is_ignored": True,
+                "reasons": ["Synthetic uppercase classifier output"],
+                "signals": {},
+            }
+
+        core_plan = build_archive_plan(
+            emails=provider.list_recent(limit=1, unread_only=False),
+            classifier=uppercase_classifier,
+            preferences={},
+            provider_name=type(provider).__name__,
+        )
+        planned = core_plan.to_dict()["planned"][0]
+
+        self.assertEqual("Newsletter", planned["evidence"]["classification"]["category"])
+        self.assertEqual("newsletter", planned["evidence"]["policy"]["category"])
+
+    def test_archive_action_models_define_formal_state_boundary(self) -> None:
+        proposal = ActionProposal.normalize(
+            {
+                "action": "archive",
+                "email_id": "email-004",
+                "thread_id": "thread-004",
+                "subject": "Newsletter",
+                "from_email": "newsletter@example.com",
+                "from_name": "Newsletter",
+                "reason": "low-value mail",
+                "evidence": {
+                    "classification": {"category": "newsletter"},
+                    "policy": {"decision": "propose_archive"},
+                    "email": {"snippet": "Weekly product notes."},
+                },
+            }
+        )
+        audit_event = ActionAuditEvent.new(
+            proposal.proposal_id,
+            "proposal_created",
+            "policy",
+            {"action": proposal.action, "email_id": proposal.email_id},
+        )
+
+        self.assertEqual("proposed", proposal.status)
+        self.assertEqual("proposal", proposal.summary_dict()["item_type"])
+        self.assertEqual("Weekly product notes.", proposal.summary_dict()["snippet"])
+        self.assertEqual("proposal_created", audit_event.event_type)
+        self.assertEqual(proposal.proposal_id, audit_event.proposal_id)
 
     def test_large_proposal_scan_keeps_structured_result(self) -> None:
         response = self.runtime.execute_tool_for_test(

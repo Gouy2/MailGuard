@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .email_proposals import ARCHIVE_CATEGORIES, ArchiveProposalPolicy
+from .archive import ARCHIVE_CATEGORIES, ArchiveProposalPolicy
 from .email_provider import EmailMessage, EmailProvider
 
 
