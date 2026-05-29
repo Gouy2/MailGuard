@@ -40,6 +40,7 @@ scan/search
 - `server/app/archive/policy.py` 承载 precision-first archive policy。
 - `server/app/archive/plan.py` 承载无副作用 plan 构造。
 - `server/app/archive/actions.py` 定义正式 `ActionProposal` / `ActionAuditEvent` 模型、状态更新和 audit payload。
+- `server/app/artifacts.py` 定义本地 JSON artifact 读写边界，用于真实标签、shadow results、memory proposal review data 等开发/学习文件。
 - `server/app/email_proposals.py` 暂时保留为兼容门面和 proposal 状态流转层。
 - `uv run mailguard ...` workflow presets 降低真实测试命令负担；底层长命令保持兼容。
 - 测试已拆分为按领域命名的多个模块；后续新增测试应优先放入对应模块。
@@ -47,7 +48,7 @@ scan/search
 ## 下一步
 
 1. 继续瘦身 `email_proposals.py`：让它只保留 scan/proposal orchestration，避免重新堆回规则和状态细节。
-2. 将正式状态与 eval artifact 分清：action proposal / audit log 是正式状态；real labels / shadow results 是开发评估数据。
+2. 将正式状态与 eval artifact 分清：action proposal / audit log 是正式状态；real labels / shadow results / memory proposal review data 是本地 artifact。
 3. 让 CLI 和未来 API/SSE 只作为 adapter 复用同一条 archive core pipeline。
 4. 结构稳定后，再回到真实邮箱只读 candidate/proposal 人工标注、confirmed memory 校验和 LLM shadow readiness。
 5. 基于 readiness gate 的结果，决定 LLM scorer 是否能从 shadow mode 进入 proposal 辅助。
@@ -71,7 +72,7 @@ scan/search
 ## 验证基线
 
 - `python3 -m py_compile server/app/*.py server/app/archive/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py`：通过。
-- `python3 -m unittest tests.test_email_tools`：107 tests OK，1 skipped。
-- `python3 -m unittest discover -s tests -p 'test*.py'`：107 tests OK，1 skipped。
+- `python3 -m unittest tests.test_email_tools`：108 tests OK，1 skipped。
+- `python3 -m unittest discover -s tests -p 'test*.py'`：108 tests OK，1 skipped。
 - `python3 server/email_cli.py eval-proposals --limit 36`：mock proposal policy precision 1.0，recall 0.5385，false positive 0。
 - `python3 server/email_cli.py review-proposals --limit 12 --all`：mock scan 输出 3 proposals、2 candidates、7 protected、0 no action。

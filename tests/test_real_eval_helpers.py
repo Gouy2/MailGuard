@@ -18,6 +18,7 @@ from server.email_cli import run_cli
 from server.agent_smoke import run_agent_smoke, run_real_pending_write_smoke
 from server.app.agent import _state_db_path
 from server.app.agent import AgentRuntime
+from server.app.artifacts import load_json_artifact, write_json_artifact
 from server.app.archive_shadow import (
     archive_shadow_record,
     build_archive_shadow_input,
@@ -64,6 +65,18 @@ from tests.fakes import (
 )
 
 class RealEmailEvalTests(unittest.TestCase):
+    def test_json_artifact_helper_keeps_local_files_outside_runtime_state(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            artifact_path = Path(temp_dir) / "labels.json"
+            default = {"schema_version": 1, "labels": {}}
+
+            missing = load_json_artifact(artifact_path, default=default)
+            missing["labels"]["imap-1"] = {"label": "important"}
+            write_json_artifact(artifact_path, missing)
+            loaded = load_json_artifact(artifact_path, default=default)
+
+        self.assertEqual({"imap-1": {"label": "important"}}, loaded["labels"])
+
     def test_real_label_evaluation_tracks_mismatches(self) -> None:
         label_data = {
             "schema_version": 1,

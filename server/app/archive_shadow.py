@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .artifacts import artifact_mapping, load_json_artifact, write_json_artifact
 from .llm_email_classifier import _looks_like_response_format_error, _looks_like_retryable_error, _parse_json_object
 from .real_proposal_eval import evaluate_real_proposal_labels
 from .runtime_env import load_server_env
@@ -208,13 +209,8 @@ def archive_shadow_input_diagnostics(
 
 
 def load_archive_shadow_results(path: str | Path) -> dict[str, Any]:
-    shadow_path = Path(path)
-    if not shadow_path.exists():
-        return _empty_shadow_store()
-    data = json.loads(shadow_path.read_text(encoding="utf-8"))
-    results = data.get("results", {})
-    if not isinstance(results, dict):
-        results = {}
+    data = load_json_artifact(path, default=_empty_shadow_store())
+    results = artifact_mapping(data, "results")
     return {
         "schema_version": int(data.get("schema_version", ARCHIVE_SHADOW_SCHEMA_VERSION)),
         "results": results,
@@ -227,9 +223,7 @@ def save_archive_shadow_result(path: str | Path, record: dict[str, Any]) -> dict
         raise ValueError("shadow result item_id is required")
     data = load_archive_shadow_results(path)
     data["results"][item_id] = record
-    shadow_path = Path(path)
-    shadow_path.parent.mkdir(parents=True, exist_ok=True)
-    shadow_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    write_json_artifact(path, data)
     return record
 
 

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from .artifacts import artifact_mapping, load_json_artifact, write_json_artifact
 
 
 MEMORY_PROPOSAL_SCHEMA_VERSION = 1
@@ -14,13 +15,8 @@ MEMORY_STATUSES = {"proposed", "approved", "rejected"}
 
 
 def load_memory_proposals(path: str | Path) -> dict[str, Any]:
-    proposal_path = Path(path)
-    if not proposal_path.exists():
-        return _empty_store()
-    data = json.loads(proposal_path.read_text(encoding="utf-8"))
-    proposals = data.get("proposals", {})
-    if not isinstance(proposals, dict):
-        proposals = {}
+    data = load_json_artifact(path, default=_empty_store())
+    proposals = artifact_mapping(data, "proposals")
     return {
         "schema_version": int(data.get("schema_version", MEMORY_PROPOSAL_SCHEMA_VERSION)),
         "proposals": proposals,
@@ -227,9 +223,7 @@ def _empty_store() -> dict[str, Any]:
 
 
 def _write_store(path: str | Path, data: dict[str, Any]) -> None:
-    proposal_path = Path(path)
-    proposal_path.parent.mkdir(parents=True, exist_ok=True)
-    proposal_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    write_json_artifact(path, data)
 
 
 def _now() -> str:

@@ -100,6 +100,13 @@ Policy + Memory + User Permission: authorize
 - 约束：`MemoryStore` 和 SQLite 继续负责持久化，不在本轮迁移数据库 schema；外部 dict 结构保持兼容。
 - 后续：real labels、shadow results 等继续作为 eval artifact，不进入正式状态模型；automation policy 落地前不自动执行真实邮箱写操作。
 
+## 2026-05-28 - 本地 JSON artifact 与正式运行态分离
+
+- 决策：新增 `server/app/artifacts.py`，集中处理真实标签、LLM shadow results、memory proposal review data 等本地 JSON 文件的读写。
+- 理由：这些文件服务真实测试、评估、学习和用户确认，不应和 `ActionProposal` / audit log / SQLite runtime state 混为一谈。
+- 约束：本轮只抽 IO 边界，不改变文件 schema、不迁移现有数据、不改变 CLI 命令和评估指标。
+- 后续：如果 memory proposal 进入正式产品状态，应迁入明确的 runtime store，而不是继续依赖 eval artifact 文件。
+
 ## 2026-05-26 - 文档瘦身
 
 - 决策：主文档收敛为 `project-state.md`、`decisions.md`、`architecture.md`、`testing-and-evaluation.md`、`test-logs/README.md`。

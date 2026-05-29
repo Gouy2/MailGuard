@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from .artifacts import artifact_mapping, load_json_artifact, write_json_artifact
 
 
 REAL_LABEL_SCHEMA_VERSION = 1
@@ -16,16 +17,8 @@ IGNORED_LABELS = {"ignore"}
 
 
 def load_real_labels(path: str | Path) -> dict[str, Any]:
-    label_path = Path(path)
-    if not label_path.exists():
-        return {
-            "schema_version": REAL_LABEL_SCHEMA_VERSION,
-            "labels": {},
-        }
-    data = json.loads(label_path.read_text(encoding="utf-8"))
-    labels = data.get("labels", {})
-    if not isinstance(labels, dict):
-        labels = {}
+    data = load_json_artifact(path, default=_empty_store())
+    labels = artifact_mapping(data, "labels")
     return {
         "schema_version": int(data.get("schema_version", REAL_LABEL_SCHEMA_VERSION)),
         "labels": labels,
@@ -65,9 +58,7 @@ def save_real_label(
         "updated_at": datetime.now().astimezone().isoformat(),
     }
     data["labels"][email_id] = record
-    label_path = Path(path)
-    label_path.parent.mkdir(parents=True, exist_ok=True)
-    label_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    write_json_artifact(path, data)
     return record
 
 
@@ -156,3 +147,10 @@ def _ratio(numerator: int, denominator: int) -> float:
     if denominator == 0:
         return 0.0
     return round(numerator / denominator, 4)
+
+
+def _empty_store() -> dict[str, Any]:
+    return {
+        "schema_version": REAL_LABEL_SCHEMA_VERSION,
+        "labels": {},
+    }

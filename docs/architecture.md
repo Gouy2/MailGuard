@@ -23,6 +23,7 @@ FastAPI / CLI
 - `server/app/email_tools.py`：邮件工具注册、规则分类器、scheduler、eval。
 - `server/app/archive/`：archive plan/action 的 typed models、precision-first policy、无副作用计划构造和 audit payload。
 - `server/app/email_proposals.py`：archive proposal 兼容门面、审批状态流转、approved execution、audit log。
+- `server/app/artifacts.py`：本地 JSON artifact 读写边界；用于真实标签、LLM shadow results 和 memory proposal review data。
 - `server/app/proposal_eval.py` / `server/app/real_proposal_eval.py`：proposal policy mock eval 和真实 proposal 标签评估。
 - `server/app/email_provider.py` / `server/app/qq_imap_provider.py`：provider 协议、mock provider、QQ/Foxmail IMAP provider。
 - `server/app/memory.py` / `server/app/sqlite_state.py`：进程内状态和可选 SQLite。
@@ -149,7 +150,7 @@ email_scan_proposals
 当前状态边界：
 
 - 正式状态：`ActionProposal`、`ActionAuditEvent`、email preferences、notifications、scan history。
-- 开发评估数据：real email labels、real proposal labels、memory proposal review data、LLM shadow results。
+- 本地 artifact：real email labels、real proposal labels、memory proposal review data、LLM shadow results；统一通过 `server/app/artifacts.py` 读写，不视为邮箱运行态。
 - 临时运行态：pending tool calls、chat history、draft metadata。
 
 ## LLM Shadow Scorer
