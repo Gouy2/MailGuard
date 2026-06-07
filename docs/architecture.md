@@ -23,7 +23,7 @@ FastAPI / CLI
 - `server/app/email_tools.py`：邮件工具注册 adapter；内部按 provider/read、preferences、scheduler、proposal、eval、mutation 分段。
 - `server/app/email_classifier.py`：deterministic classifier、规则常量和分类 helper。
 - `server/app/archive/`：archive plan/action 的 typed models、precision-first policy、无副作用计划构造和 audit payload。
-- `server/app/cleaner/`：Inbox Cleaner rule model、teach workflow、dry-run workflow 和 audited execution；复用 archive plan，只生成 proposed rules / `auto_eligible` preview artifact，`clean-run --yes` 才执行 archive。
+- `server/app/cleaner/`：Inbox Cleaner rule model、automation policy、teach workflow、dry-run workflow 和 audited execution；复用 archive plan，只生成 proposed rules / `auto_eligible` preview artifact，`clean-run --yes` 或已启用的 `clean-run --policy` 才执行 archive。
 - `server/app/archive_shadow_workflow.py`：LLM archive shadow 的 workflow 编排；可被 CLI、未来 API/SSE 或后台任务复用。
 - `server/app/memory_workflow.py`：observed memory、memory proposal refresh/list 和 confirmed memory 的 workflow 编排。
 - `server/app/daily_report/`：手动触发的只读 Daily Report Agent；包含 typed action loop、planner、只读工具 adapter 和 report artifact。
@@ -109,15 +109,29 @@ email_cli clean-run --yes
 -> provider.archive
 -> clean audit events
 -> updated clean artifact
+
+email_cli clean-policy enable
+-> MemoryStore.save_clean_policy
+-> SQLite email_clean_policy
+
+email_cli clean-run --policy
+-> cleaner.run_clean_execution
+-> clean preview auto_eligible
+-> automation policy gate
+-> provider.archive
+-> clean audit events
+-> updated clean artifact
 ```
 
 第一版正式规则支持 `sender`、`domain`、`keyword`、`category` scope，以及 `archive` / `protect` action。`teach` 只创建 `proposed` rule；用户通过 `rule approve` 启用后，archive rule 才能授权 `auto_eligible`。protect rule 和 archive policy 的 `protected` guard 永远优先；同一封邮件同时命中 archive/protect 时进入 protected。
 
-旧的 approved `archive_sender` / `archive_domain` confirmed memory 仍作为兼容授权来源；category memory、LLM shadow 结果和单纯严格规则不能授权 auto-eligible。
+旧的 approved `archive_sender` / `archive_domain` confirmed memory 仍作为兼容 `auto_eligible` 来源；category memory、LLM shadow 结果和单纯严格规则不能授权 auto-eligible。
 
 Clean preview artifact 保存 rule counts、auto_eligible、protected、candidate 和 no_action，并明确 `mailbox_mutation=false`、`proposal_mutation=false`、`llm_authorization=false`。它不创建 `ActionProposal`，不写 audit log，不调用 provider 的写操作。
 
 `clean-run` 默认也是 approval-required preview，不执行邮箱写操作。只有显式 `--yes` 时才对本次 preview 的 `auto_eligible` 调用 provider `archive`，并为每封邮件写入 clean audit event：started、succeeded、failed 或 skipped。Clean audit 与 action proposal audit 分离，因为它表达的是“规则授权后的自动清理执行”，不是“用户逐封审批 proposal”。
+
+Automation policy 是 future scheduler 的执行门禁，默认 disabled，持久化在 SQLite `email_clean_policy`。启用后，`clean-run --policy` 只执行 policy 允许的 authority：默认允许 `clean_rule`，不允许 legacy `confirmed_memory`，并受 `max_execute` 限制。`--yes` 仍表示人工手动批准本轮执行；scheduler 后续应调用 `--policy` 等价 workflow，而不是复用 `--yes`。
 
 ## Daily Report Agent
 

@@ -156,6 +156,15 @@ Policy + Memory + User Permission: authorize
 - 约束：执行范围只来自当前 preview 的 `auto_eligible`，并受 `--max-execute` 限制；`protected`、candidate、no_action 不能执行。
 - 当前状态：已记录 started/succeeded/failed/skipped audit events；尚未实现回滚命令和 scheduler。
 
+## 2026-06-07 - Scheduler 前必须先有显式 Cleaner Automation Policy
+
+- 决策：新增持久化 cleaner automation policy，作为未来 scheduler 自动执行 archive 的门禁；默认 disabled。
+- 理由：不能让后台任务直接等价于 `clean-run --yes`。`--yes` 表达人工批准本轮执行，`--policy` 表达系统按用户保存的自动化策略执行，两者需要在代码、CLI、artifact 和 audit 中区分。
+- 约束：policy 默认只允许 `clean_rule` authority，不允许 legacy `confirmed_memory` 自动执行；confirmed memory 可以继续影响 dry-run 或 proposal，但不能默认成为无人值守执行依据。
+- 约束：policy 受 `max_execute` 限制；`protected`、candidate、no_action 仍不能执行；LLM shadow 仍不能授权自动化。
+- 当前状态：`clean-policy` 可 show/enable/disable；`clean-run --policy` 只执行 policy 允许的 `auto_eligible`，被 policy 拦截的 item 会记录在 artifact 的 `policy_skipped` 中；policy 持久化到 SQLite `email_clean_policy`。
+- 后续：scheduler integration 应调用 policy-gated cleaner workflow；接 scheduler 前还需要设计用户可见的运行记录、失败处理和回滚/恢复策略。
+
 ## 2026-05-26 - 文档瘦身
 
 - 决策：主文档收敛为 `project-state.md`、`decisions.md`、`architecture.md`、`testing-and-evaluation.md`、`test-logs/README.md`。

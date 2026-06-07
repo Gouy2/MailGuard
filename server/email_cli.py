@@ -36,7 +36,8 @@ try:
         list_clean_rules,
         run_teach_workflow,
     )
-    from app.cleaner.run import clean_audit_log, run_clean_execution
+    from app.cleaner.policy import update_clean_policy
+    from app.cleaner.run import clean_audit_log, clean_policy_status, run_clean_execution, save_clean_policy
     from app.daily_report.runner import run_daily_report
     from app.daily_report.storage import DEFAULT_DAILY_REPORT_DIR
     from app.memory_proposals import (
@@ -80,7 +81,8 @@ except ModuleNotFoundError as exc:  # pragma: no cover - used when imported from
         list_clean_rules,
         run_teach_workflow,
     )
-    from server.app.cleaner.run import clean_audit_log, run_clean_execution
+    from server.app.cleaner.policy import update_clean_policy
+    from server.app.cleaner.run import clean_audit_log, clean_policy_status, run_clean_execution, save_clean_policy
     from server.app.daily_report.runner import run_daily_report
     from server.app.daily_report.storage import DEFAULT_DAILY_REPORT_DIR
     from server.app.memory_proposals import (
@@ -193,8 +195,31 @@ def build_parser() -> argparse.ArgumentParser:
     clean_run.add_argument("--out-dir", default=str(DEFAULT_CLEAN_PREVIEW_DIR))
     clean_run.add_argument("--memory-path", default=str(DEFAULT_MEMORY_PROPOSAL_PATH))
     clean_run.add_argument("--show-protected", action="store_true", help="Print protected items for policy review.")
-    clean_run.add_argument("--yes", action="store_true", help="Approve and execute auto-eligible archive actions.")
+    clean_run_approval = clean_run.add_mutually_exclusive_group()
+    clean_run_approval.add_argument("--yes", action="store_true", help="Approve and execute auto-eligible archive actions.")
+    clean_run_approval.add_argument("--policy", action="store_true", help="Execute only what the saved cleaner automation policy allows.")
     clean_run.set_defaults(func=_cmd_clean_run, display_command="clean-run")
+
+    clean_policy = subparsers.add_parser("clean-policy", help="Show or update cleaner automation policy.")
+    clean_policy_subparsers = clean_policy.add_subparsers(dest="policy_command")
+    clean_policy_show = clean_policy_subparsers.add_parser("show", help="Show cleaner automation policy.")
+    clean_policy_show.set_defaults(func=_cmd_clean_policy, display_command="clean-policy")
+    clean_policy_enable = clean_policy_subparsers.add_parser("enable", help="Enable cleaner automation policy.")
+    clean_policy_enable.add_argument("--max-execute", type=int, default=None)
+    clean_policy_enable.add_argument(
+        "--allow-confirmed-memory",
+        action="store_true",
+        help="Also allow legacy confirmed sender/domain memory to execute automatically.",
+    )
+    clean_policy_enable.add_argument(
+        "--disable-clean-rule",
+        action="store_true",
+        help="Disable enabled clean rules as an automation authority.",
+    )
+    clean_policy_enable.set_defaults(func=_cmd_clean_policy, display_command="clean-policy")
+    clean_policy_disable = clean_policy_subparsers.add_parser("disable", help="Disable cleaner automation policy.")
+    clean_policy_disable.set_defaults(func=_cmd_clean_policy, display_command="clean-policy")
+    clean_policy.set_defaults(func=_cmd_clean_policy, display_command="clean-policy")
 
     teach = subparsers.add_parser(
         "teach",
@@ -666,13 +691,51 @@ def _cmd_clean_run(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
         hours=args.hours,
         max_execute=args.max_execute,
         execute=args.yes,
-        actor="user" if args.yes else "system",
+        use_policy=args.policy,
+        actor="automation_policy" if args.policy else ("user" if args.yes else "system"),
     )
     return {
         "ok": result.get("status") in {"ok", "partial_error"},
         "tool": "email_clean_run",
         "error": result.get("error", ""),
         "result": result,
+    }
+
+
+def _cmd_clean_policy(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    memory_store = getattr(runtime, "memory_store", None)
+    if memory_store is None:
+        return {"ok": False, "tool": "email_clean_policy", "error": "runtime memory store is unavailable"}
+
+    command = getattr(args, "policy_command", None) or "show"
+    if command == "enable":
+        current = memory_store.clean_policy(args.session_id)
+        policy = update_clean_policy(
+            current,
+            enabled=True,
+            max_execute=args.max_execute,
+            allow_clean_rule=not args.disable_clean_rule,
+            allow_confirmed_memory=bool(args.allow_confirmed_memory),
+            updated_by="user",
+        )
+        result = save_clean_policy(memory_store, args.session_id, policy)
+    elif command == "disable":
+        current = memory_store.clean_policy(args.session_id)
+        result = save_clean_policy(
+            memory_store,
+            args.session_id,
+            update_clean_policy(current, enabled=False, updated_by="user"),
+        )
+    else:
+        result = clean_policy_status(memory_store, args.session_id)
+
+    return {
+        "ok": True,
+        "tool": "email_clean_policy",
+        "result": {
+            "command": command,
+            **result,
+        },
     }
 
 

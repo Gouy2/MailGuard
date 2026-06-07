@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import patch
 
 from server.email_cli import run_cli
+from server.app.cleaner.policy import default_clean_policy, update_clean_policy
 from server.app.cleaner.preview import run_clean_preview
 from server.app.cleaner.rules import enable_rule, proposed_rule
 from server.app.cleaner.run import run_clean_execution
@@ -322,6 +323,125 @@ class CleanerTests(unittest.TestCase):
         self.assertEqual(["clean_execution_started", "clean_execution_succeeded"], [item["event_type"] for item in events])
         self.assertEqual(rule["rule_id"], events[-1]["payload"]["clean_rule_match"]["rule_id"])
 
+    def test_clean_policy_defaults_disabled_and_does_not_execute(self) -> None:
+        provider = CleanerProvider()
+        memory_store = MemoryStore()
+        rule = enable_rule(
+            proposed_rule(
+                action="archive",
+                scope="domain",
+                value="example.com",
+                source="test",
+                reason="user approved example.com cleanup",
+            )
+        )
+        memory_store.save_clean_rule("cleaner", rule)
+        with TemporaryDirectory() as temp_dir:
+            memory_path = Path(temp_dir) / "memory.json"
+            _write_memory(memory_path, [])
+            result = run_clean_execution(
+                provider=provider,
+                memory_store=memory_store,
+                session_id="cleaner",
+                memory_path=memory_path,
+                output_dir=temp_dir,
+                limit=10,
+                use_policy=True,
+            )
+
+        self.assertEqual(default_clean_policy(), result["automation_policy"])
+        self.assertEqual("policy_disabled", result["execution_mode"])
+        self.assertEqual(0, result["selected_count"])
+        self.assertEqual(1, result["policy_skipped_count"])
+        self.assertIn("disabled", result["approval_hint"])
+        self.assertFalse(result["mailbox_mutation"])
+        self.assertFalse(result["audit_mutation"])
+        self.assertFalse(provider.archived)
+        self.assertEqual([], memory_store.clean_audit_events("cleaner"))
+
+    def test_clean_policy_executes_clean_rules_but_not_confirmed_memory_by_default(self) -> None:
+        provider = CleanerProvider()
+        memory_store = MemoryStore()
+        rule = enable_rule(
+            proposed_rule(
+                action="archive",
+                scope="domain",
+                value="news.example",
+                source="test",
+                reason="user approved newsletter cleanup",
+            )
+        )
+        memory_store.save_clean_rule("cleaner", rule)
+        memory_store.save_clean_policy(
+            "cleaner",
+            update_clean_policy(memory_store.clean_policy("cleaner"), enabled=True, max_execute=5),
+        )
+        with TemporaryDirectory() as temp_dir:
+            memory_path = Path(temp_dir) / "memory.json"
+            _write_memory(memory_path, [{"memory_type": "archive_sender", "value": "deals@example.com"}])
+            result = run_clean_execution(
+                provider=provider,
+                memory_store=memory_store,
+                session_id="cleaner",
+                memory_path=memory_path,
+                output_dir=temp_dir,
+                limit=10,
+                use_policy=True,
+            )
+
+        self.assertEqual("policy_execute", result["execution_mode"])
+        self.assertEqual(2, result["auto_eligible_count"])
+        self.assertEqual(1, result["selected_count"])
+        self.assertEqual(1, result["executed_count"])
+        self.assertEqual("news-001", result["executed"][0]["email_id"])
+        self.assertEqual("clean_rule", result["executed"][0]["automation_authority"])
+        self.assertEqual(1, result["policy_skipped_count"])
+        self.assertEqual("promo-001", result["policy_skipped"][0]["email_id"])
+        self.assertIn("confirmed_memory", result["policy_skipped"][0]["policy_denial_reason"])
+        self.assertTrue(provider.archived)
+        events = memory_store.clean_audit_events("cleaner", run_id=result["run_id"], limit=0)
+        self.assertEqual(2, len(events))
+        self.assertEqual("automation_policy", events[-1]["actor"])
+
+    def test_clean_policy_max_execute_limits_selected_items(self) -> None:
+        provider = CleanerProvider()
+        memory_store = MemoryStore()
+        for value in ("example.com", "news.example"):
+            memory_store.save_clean_rule(
+                "cleaner",
+                enable_rule(
+                    proposed_rule(
+                        action="archive",
+                        scope="domain",
+                        value=value,
+                        source="test",
+                        reason="user approved cleanup",
+                    )
+                ),
+            )
+        memory_store.save_clean_policy(
+            "cleaner",
+            update_clean_policy(memory_store.clean_policy("cleaner"), enabled=True, max_execute=1),
+        )
+        with TemporaryDirectory() as temp_dir:
+            memory_path = Path(temp_dir) / "memory.json"
+            _write_memory(memory_path, [])
+            result = run_clean_execution(
+                provider=provider,
+                memory_store=memory_store,
+                session_id="cleaner",
+                memory_path=memory_path,
+                output_dir=temp_dir,
+                limit=10,
+                use_policy=True,
+            )
+
+        self.assertEqual(2, result["auto_eligible_count"])
+        self.assertEqual(1, result["selected_count"])
+        self.assertEqual(1, result["executed_count"])
+        self.assertEqual(1, result["policy_skipped_count"])
+        self.assertIn("max_execute", result["policy_skipped"][0]["policy_denial_reason"])
+
     def test_clean_cli_and_preset_render_dry_run(self) -> None:
         fake_run = {
             "run_id": "clean-test",
@@ -487,6 +607,97 @@ class CleanerTests(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn("Selected: 1, executed: 0", output)
         self.assertIn("Re-run clean-run with --yes", output)
+
+    def test_clean_policy_cli_commands_render(self) -> None:
+        runtime = FakeCliRuntime([])
+        runtime.memory_store = MemoryStore()
+
+        show_out = StringIO()
+        show_code = run_cli(
+            ["clean-policy"],
+            runtime_factory=lambda: runtime,
+            stdout=show_out,
+            stderr=StringIO(),
+        )
+        self.assertEqual(0, show_code)
+        self.assertIn("Enabled: False", show_out.getvalue())
+
+        enable_out = StringIO()
+        enable_code = run_cli(
+            ["clean-policy", "enable", "--max-execute", "3"],
+            runtime_factory=lambda: runtime,
+            stdout=enable_out,
+            stderr=StringIO(),
+        )
+        self.assertEqual(0, enable_code)
+        self.assertIn("Enabled: True", enable_out.getvalue())
+        self.assertIn("Max execute: 3", enable_out.getvalue())
+        self.assertIn("Policy mutation: True", enable_out.getvalue())
+        self.assertTrue(runtime.memory_store.clean_policy("email-cli")["enabled"])
+
+        disable_out = StringIO()
+        disable_code = run_cli(
+            ["clean-policy", "disable"],
+            runtime_factory=lambda: runtime,
+            stdout=disable_out,
+            stderr=StringIO(),
+        )
+        self.assertEqual(0, disable_code)
+        self.assertIn("Enabled: False", disable_out.getvalue())
+
+    def test_clean_run_cli_policy_mode(self) -> None:
+        fake_run = {
+            "run_id": "clean-run-policy-test",
+            "status": "ok",
+            "execution_mode": "policy_disabled",
+            "provider": {"provider": "CleanerProvider", "mailbox": "INBOX"},
+            "artifact_path": "/tmp/clean-run-policy-test.json",
+            "fetched": 1,
+            "auto_eligible_count": 1,
+            "protected_count": 0,
+            "candidate_count": 0,
+            "no_action_count": 0,
+            "enabled_clean_rule_count": 1,
+            "archive_rule_count": 1,
+            "protect_rule_count": 0,
+            "auto_eligible": [],
+            "candidates": [],
+            "protected": [],
+            "mailbox_mutation": False,
+            "proposal_mutation": False,
+            "llm_authorization": False,
+            "automation_policy": default_clean_policy(),
+            "policy_skipped": [],
+            "policy_skipped_count": 0,
+            "selected_count": 0,
+            "executed_count": 0,
+            "failed_count": 0,
+            "skipped_count": 0,
+            "audit_mutation": False,
+            "audit_event_count": 0,
+            "approval_hint": "Cleaner automation policy is disabled; run clean-policy enable before using --policy.",
+            "error": "",
+        }
+        runtime = FakeCliRuntime([])
+        runtime.memory_store = MemoryStore()
+        stdout = StringIO()
+
+        with patch("server.email_cli.run_clean_execution", return_value=fake_run) as mocked:
+            exit_code = run_cli(
+                ["clean-run", "--policy", "--limit", "5"],
+                runtime_factory=lambda: runtime,
+                stdout=stdout,
+                stderr=StringIO(),
+            )
+
+        self.assertEqual(0, exit_code)
+        mocked.assert_called_once()
+        self.assertTrue(mocked.call_args.kwargs["use_policy"])
+        self.assertFalse(mocked.call_args.kwargs["execute"])
+        self.assertEqual("automation_policy", mocked.call_args.kwargs["actor"])
+        output = stdout.getvalue()
+        self.assertIn("Automation policy: enabled=False", output)
+        self.assertIn("clean-policy enable", output)
 
 
 def _write_memory(path: Path, entries: list[dict[str, str]]) -> None:

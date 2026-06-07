@@ -11,6 +11,7 @@ import uuid
 
 from .archive import new_action_audit_event, normalize_action_proposal
 from .cleaner.audit import new_clean_audit_event
+from .cleaner.policy import default_clean_policy, normalize_clean_policy
 from .cleaner.rules import disable_rule, enable_rule
 
 
@@ -31,6 +32,8 @@ class StateStore(Protocol):
     def save_action_audit_event(self, session_id: str, event: dict[str, Any]) -> None: ...
     def load_clean_rules(self, session_id: str) -> list[dict[str, Any]]: ...
     def save_clean_rule(self, session_id: str, rule: dict[str, Any]) -> None: ...
+    def load_clean_policy(self, session_id: str) -> dict[str, Any] | None: ...
+    def save_clean_policy(self, session_id: str, policy: dict[str, Any]) -> None: ...
     def load_clean_audit_events(self, session_id: str) -> list[dict[str, Any]]: ...
     def save_clean_audit_event(self, session_id: str, event: dict[str, Any]) -> None: ...
 
@@ -51,6 +54,7 @@ class MemoryStore:
         self._action_proposals: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._action_audit_events: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._clean_rules: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self._clean_policies: dict[str, dict[str, Any]] = defaultdict(default_clean_policy)
         self._clean_audit_events: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._state_store = state_store
         self._lock = RLock()
@@ -76,6 +80,7 @@ class MemoryStore:
                 self._action_proposals.clear()
                 self._action_audit_events.clear()
                 self._clean_rules.clear()
+                self._clean_policies.clear()
                 self._clean_audit_events.clear()
                 if self._state_store:
                     self._state_store.clear()
@@ -87,6 +92,7 @@ class MemoryStore:
             self._action_proposals.pop(session_id, None)
             self._action_audit_events.pop(session_id, None)
             self._clean_rules.pop(session_id, None)
+            self._clean_policies.pop(session_id, None)
             self._clean_audit_events.pop(session_id, None)
             if self._state_store:
                 self._state_store.clear(session_id)
@@ -405,6 +411,21 @@ class MemoryStore:
         rule = self.get_clean_rule(session_id, rule_id)
         return self.save_clean_rule(session_id, disable_rule(rule))
 
+    def clean_policy(self, session_id: str) -> dict[str, Any]:
+        with self._lock:
+            self._ensure_clean_policy_loaded(session_id)
+            return dict(self._clean_policies[session_id])
+
+    def save_clean_policy(self, session_id: str, policy: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            item = normalize_clean_policy(policy)
+            self._clean_policies[session_id] = item
+            if self._state_store:
+                save_clean_policy = getattr(self._state_store, "save_clean_policy", None)
+                if save_clean_policy:
+                    save_clean_policy(session_id, item)
+            return dict(item)
+
     def add_clean_audit_event(
         self,
         session_id: str,
@@ -505,6 +526,16 @@ class MemoryStore:
             if load_clean_rules:
                 rules = load_clean_rules(session_id)
         self._clean_rules[session_id] = [dict(item) for item in rules]
+
+    def _ensure_clean_policy_loaded(self, session_id: str) -> None:
+        if session_id in self._clean_policies:
+            return
+        policy = None
+        if self._state_store:
+            load_clean_policy = getattr(self._state_store, "load_clean_policy", None)
+            if load_clean_policy:
+                policy = load_clean_policy(session_id)
+        self._clean_policies[session_id] = normalize_clean_policy(policy)
 
     def _ensure_clean_audit_loaded(self, session_id: str) -> None:
         if session_id in self._clean_audit_events:

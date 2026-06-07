@@ -19,6 +19,7 @@ from server.agent_smoke import run_agent_smoke, run_real_pending_write_smoke
 from server.app.agent import DEFAULT_STATE_DB, _state_db_path
 from server.app.agent import AgentRuntime
 from server.app.auth import configured_auth_token, require_api_token
+from server.app.cleaner.policy import update_clean_policy
 from server.app.cleaner.rules import proposed_rule
 from server.app.email_eval import evaluate_email_classifier
 from server.app.email_provider import MockEmailProvider
@@ -222,6 +223,30 @@ class SQLiteMemoryPersistenceTests(unittest.TestCase):
         self.assertEqual(1, len(rules))
         self.assertEqual(approved["rule_id"], rules[0]["rule_id"])
         self.assertEqual("enabled", rules[0]["status"])
+
+    def test_clean_policy_persists_across_memory_store_instances(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "state.db"
+            first_store = SQLiteStateStore(db_path)
+            first = MemoryStore(state_store=first_store)
+            policy = update_clean_policy(
+                first.clean_policy("persist"),
+                enabled=True,
+                max_execute=3,
+                allow_confirmed_memory=True,
+            )
+            first.save_clean_policy("persist", policy)
+            first_store.close()
+
+            second_store = SQLiteStateStore(db_path)
+            second = MemoryStore(state_store=second_store)
+            persisted = second.clean_policy("persist")
+            second_store.close()
+
+        self.assertTrue(persisted["enabled"])
+        self.assertEqual(3, persisted["max_execute"])
+        self.assertTrue(persisted["allow_clean_rule"])
+        self.assertTrue(persisted["allow_confirmed_memory"])
 
     def test_clean_audit_events_persist_across_memory_store_instances(self) -> None:
         with TemporaryDirectory() as temp_dir:

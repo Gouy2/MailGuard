@@ -264,6 +264,15 @@ def _print_clean_rules(result: dict[str, Any], out: TextIO) -> None:
 
 def _print_clean_run(result: dict[str, Any], out: TextIO, *, show_protected: bool = False) -> None:
     _print_clean_preview(result, out, show_protected=show_protected)
+    policy = dict(result.get("automation_policy") or {})
+    if policy:
+        print(
+            f"Automation policy: enabled={bool(policy.get('enabled', False))}, "
+            f"max_execute={policy.get('max_execute', 0)}, "
+            f"clean_rule={bool(policy.get('allow_clean_rule', False))}, "
+            f"confirmed_memory={bool(policy.get('allow_confirmed_memory', False))}",
+            file=out,
+        )
     print(
         f"Selected: {result.get('selected_count', 0)}, executed: {result.get('executed_count', 0)}, "
         f"failed: {result.get('failed_count', 0)}, skipped: {result.get('skipped_count', 0)}",
@@ -285,6 +294,9 @@ def _print_clean_run(result: dict[str, Any], out: TextIO, *, show_protected: boo
     if result.get("skipped"):
         print("Skipped:", file=out)
         _print_proposal_items(result.get("skipped", [])[:10], out)
+    if result.get("policy_skipped"):
+        print(f"Policy skipped: {result.get('policy_skipped_count', 0)}", file=out)
+        _print_policy_skipped_items(result.get("policy_skipped", [])[:10], out)
 
 
 def _print_clean_audit(result: dict[str, Any], out: TextIO) -> None:
@@ -315,6 +327,19 @@ def _print_clean_rule_decision(command: str, result: dict[str, Any], out: TextIO
     print(f"Status: {rule.get('status', '')}", file=out)
     print(f"Rule: {rule.get('action', '')} {rule.get('scope', '')}:{rule.get('value', '')}", file=out)
     print(f"Mailbox mutation: {bool(result.get('mailbox_mutation', False))}", file=out)
+
+
+def _print_clean_policy(result: dict[str, Any], out: TextIO) -> None:
+    policy = dict(result.get("policy") or {})
+    print(f"Command: {result.get('command', '')}", file=out)
+    print(f"Enabled: {bool(policy.get('enabled', False))}", file=out)
+    print(f"Max execute: {policy.get('max_execute', 0)}", file=out)
+    print(f"Allow clean rule: {bool(policy.get('allow_clean_rule', False))}", file=out)
+    print(f"Allow confirmed memory: {bool(policy.get('allow_confirmed_memory', False))}", file=out)
+    if policy.get("updated_at"):
+        print(f"Updated: {policy.get('updated_at', '')} by {policy.get('updated_by', '')}", file=out)
+    print(f"Mailbox mutation: {bool(result.get('mailbox_mutation', False))}", file=out)
+    print(f"Policy mutation: {bool(result.get('policy_mutation', False))}", file=out)
 
 
 def _print_clean_rule_items(rules: list[dict[str, Any]], out: TextIO) -> None:
@@ -510,6 +535,19 @@ def _print_proposal_items(proposals: list[dict[str, Any]], out: TextIO) -> None:
         print(f"   Subject: {_clip(item.get('subject', ''), 140)}", file=out)
         if item.get("reason"):
             print(f"   Reason: {_clip(item.get('reason', ''), 220)}", file=out)
+
+
+def _print_policy_skipped_items(items: list[dict[str, Any]], out: TextIO) -> None:
+    for index, item in enumerate(items, start=1):
+        print(
+            f"{index}. {_proposal_item_id(item)} "
+            f"{item.get('action', '')} {item.get('email_id', '')}",
+            file=out,
+        )
+        print(f"   From: {_format_sender(item)}", file=out)
+        print(f"   Subject: {_clip(item.get('subject', ''), 140)}", file=out)
+        if item.get("policy_denial_reason"):
+            print(f"   Policy skip: {_clip(item.get('policy_denial_reason', ''), 220)}", file=out)
 
 
 def _print_protected_items(items: list[dict[str, Any]], out: TextIO) -> None:
@@ -948,6 +986,7 @@ COMMAND_RENDERERS: dict[str, Callable[[argparse.Namespace, dict[str, Any], TextI
     "report": _result_renderer(_print_report),
     "clean-preview": _render_clean_preview,
     "clean-run": _render_clean_run,
+    "clean-policy": _result_renderer(_print_clean_policy),
     "teach": _result_renderer(_print_teach),
     "rules": _result_renderer(_print_clean_rules),
     "rule-approve": _render_clean_rule_decision,

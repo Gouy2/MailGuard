@@ -241,7 +241,7 @@ uv run python email_cli.py eval-proposals --limit 36
 
 ## Inbox Cleaner / Clean Rule CLI
 
-Cleaner 当前仍是只读预览主线。`teach` 会读取最近邮件用于 impact preview，但不会修改邮箱；`clean` / `clean-preview` 也不会创建 proposal 或执行 archive。
+Cleaner 的默认路径仍是只读预览。`teach` 会读取最近邮件用于 impact preview，但不会修改邮箱；`clean` / `clean-preview` 不创建 proposal、不执行 archive。真实执行只有两条入口：人工批准本轮的 `clean-run --yes`，以及已启用持久 policy 后的 `clean-run --policy`。
 
 ```bash
 cd server
@@ -250,6 +250,10 @@ uv run mailguard rules
 uv run mailguard rule approve <rule_id>
 uv run mailguard clean --limit 50 --hours 720 --show-protected
 uv run mailguard clean-run --limit 50 --hours 720 --max-execute 5
+uv run mailguard clean-policy
+uv run mailguard clean-policy enable --max-execute 5
+uv run mailguard clean-run --policy --limit 50 --hours 720
+uv run mailguard clean-policy disable
 uv run mailguard clean-audit
 uv run mailguard rule disable <rule_id>
 ```
@@ -262,6 +266,8 @@ uv run mailguard rule disable <rule_id>
 - `clean-preview` artifact 必须显示 `mailbox_mutation=false`、`proposal_mutation=false`、`llm_authorization=false`。
 - `clean-run` 不加 `--yes` 时必须显示 approval hint，且 `mailbox_mutation=false`、`audit_mutation=false`。
 - `clean-run --yes` 是真实邮箱写操作入口，只能在确认规则范围、`--limit`、`--max-execute` 和归档邮箱配置后进行。
+- `clean-policy` 默认 disabled；启用后默认只允许 `clean_rule` authority，不允许 legacy `confirmed_memory` 自动执行，除非显式 `--allow-confirmed-memory`。
+- `clean-run --policy` 只执行 policy 允许的 `auto_eligible`，并受持久 policy 的 `max_execute` 限制；被 policy 拦截的 item 应进入 artifact 的 `policy_skipped`。
 - 默认状态持久化到 `server/data/mailguard_state.db`；隔离测试可设置 `MAILGUARD_STATE_DB=/private/tmp/mailguard-test.db`，临时纯内存可设置 `MAILGUARD_STATE_DB=""`。
 
 ## 分类评估

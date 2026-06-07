@@ -16,6 +16,7 @@ from .audit import (
     CLEAN_EXECUTION_SUCCEEDED,
     clean_execution_payload,
 )
+from .policy import normalize_clean_policy, select_policy_items
 from .preview import DEFAULT_HOURS, DEFAULT_LIMIT, Classifier, run_clean_preview
 from .storage import CleanPreviewStorage
 
@@ -36,6 +37,7 @@ def run_clean_execution(
     hours: int = DEFAULT_HOURS,
     max_execute: int = DEFAULT_MAX_EXECUTE,
     execute: bool = False,
+    use_policy: bool = False,
     actor: str = "system",
 ) -> dict[str, Any]:
     """Run cleaner preview and optionally execute eligible archive actions with audit."""
@@ -51,12 +53,22 @@ def run_clean_execution(
         limit=limit,
         hours=hours,
     )
-    selected = list(run.get("auto_eligible", []))[: _bounded_int(max_execute, default=DEFAULT_MAX_EXECUTE, minimum=1, maximum=200)]
+    selected, policy_skipped, policy = _select_execution_items(
+        memory_store=memory_store,
+        session_id=session_id,
+        items=list(run.get("auto_eligible", [])),
+        execute=execute,
+        use_policy=use_policy,
+        max_execute=max_execute,
+    )
     run.update(
         {
-            "execution_mode": "execute" if execute else "approval_required",
+            "execution_mode": _execution_mode(execute=execute, use_policy=use_policy, selected=selected, policy=policy),
             "selected_count": len(selected),
-            "max_execute": max_execute,
+            "max_execute": policy.get("max_execute", max_execute) if use_policy else max_execute,
+            "automation_policy": policy,
+            "policy_skipped_count": len(policy_skipped),
+            "policy_skipped": policy_skipped,
             "executed_count": 0,
             "failed_count": 0,
             "skipped_count": 0,
@@ -66,15 +78,16 @@ def run_clean_execution(
             "audit_event_count": 0,
             "mailbox_mutation": False,
             "audit_mutation": False,
-            "requires_approval": bool(selected and not execute),
-            "approval_hint": "Re-run clean-run with --yes to archive selected auto-eligible mail." if selected and not execute else "",
+            "requires_approval": bool(selected and not execute and not use_policy),
+            "approval_hint": _approval_hint(selected=selected, execute=execute, use_policy=use_policy, policy=policy),
         }
     )
 
-    if not execute or run.get("status") != "ok":
+    if (not execute and not use_policy) or not selected or run.get("status") != "ok":
         CleanPreviewStorage(output_dir).save(run)
         return run
 
+    effective_actor = "automation_policy" if use_policy and actor == "system" else actor
     audit_event_count = 0
     for item in selected:
         if item.get("action") != "archive":
@@ -84,7 +97,7 @@ def run_clean_execution(
                 run_id=run["run_id"],
                 item=item,
                 event_type=CLEAN_EXECUTION_SKIPPED,
-                actor=actor,
+                actor=effective_actor,
                 error=f"unsupported clean action: {item.get('action', '')}",
             )
             audit_event_count += 1
@@ -97,7 +110,7 @@ def run_clean_execution(
             run_id=run["run_id"],
             item=item,
             event_type=CLEAN_EXECUTION_STARTED,
-            actor=actor,
+            actor=effective_actor,
         )
         audit_event_count += 1
         try:
@@ -109,7 +122,7 @@ def run_clean_execution(
                 run_id=run["run_id"],
                 item=item,
                 event_type=CLEAN_EXECUTION_FAILED,
-                actor=actor,
+                actor=effective_actor,
                 error=f"{type(exc).__name__}: {exc}",
             )
             audit_event_count += 1
@@ -129,7 +142,7 @@ def run_clean_execution(
             run_id=run["run_id"],
             item=item,
             event_type=CLEAN_EXECUTION_SUCCEEDED,
-            actor=actor,
+            actor=effective_actor,
             result=result,
         )
         audit_event_count += 1
@@ -154,6 +167,24 @@ def run_clean_execution(
         run["errors"].append(run["error"])
     CleanPreviewStorage(output_dir).save(run)
     return run
+
+
+def clean_policy_status(memory_store: MemoryStore, session_id: str) -> dict[str, Any]:
+    policy = memory_store.clean_policy(session_id)
+    return {
+        "policy": policy,
+        "mailbox_mutation": False,
+        "policy_mutation": False,
+    }
+
+
+def save_clean_policy(memory_store: MemoryStore, session_id: str, policy: dict[str, Any]) -> dict[str, Any]:
+    saved = memory_store.save_clean_policy(session_id, policy)
+    return {
+        "policy": saved,
+        "mailbox_mutation": False,
+        "policy_mutation": True,
+    }
 
 
 def clean_audit_log(
@@ -192,6 +223,55 @@ def _add_audit(
         actor=actor,
         payload=clean_execution_payload(item, result=result, error=error),
     )
+
+
+def _select_execution_items(
+    *,
+    memory_store: MemoryStore,
+    session_id: str,
+    items: list[dict[str, Any]],
+    execute: bool,
+    use_policy: bool,
+    max_execute: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    if use_policy:
+        policy = normalize_clean_policy(memory_store.clean_policy(session_id))
+        selected, skipped = select_policy_items(items, policy)
+        return selected, skipped, policy
+    selected = items[: _bounded_int(max_execute, default=DEFAULT_MAX_EXECUTE, minimum=1, maximum=200)]
+    return selected, [], {}
+
+
+def _execution_mode(
+    *,
+    execute: bool,
+    use_policy: bool,
+    selected: list[dict[str, Any]],
+    policy: dict[str, Any],
+) -> str:
+    if use_policy:
+        if not policy.get("enabled", False):
+            return "policy_disabled"
+        return "policy_execute" if selected else "policy_noop"
+    return "execute" if execute else "approval_required"
+
+
+def _approval_hint(
+    *,
+    selected: list[dict[str, Any]],
+    execute: bool,
+    use_policy: bool,
+    policy: dict[str, Any],
+) -> str:
+    if use_policy:
+        if not policy.get("enabled", False):
+            return "Cleaner automation policy is disabled; run clean-policy enable before using --policy."
+        if not selected:
+            return "Cleaner automation policy allowed no auto-eligible mail in this run."
+        return ""
+    if selected and not execute:
+        return "Re-run clean-run with --yes to archive selected auto-eligible mail."
+    return ""
 
 
 def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:

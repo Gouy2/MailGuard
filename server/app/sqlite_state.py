@@ -31,6 +31,7 @@ class SQLiteStateStore:
             "email_action_proposals",
             "email_action_audit_events",
             "email_clean_rules",
+            "email_clean_policy",
             "email_clean_audit_events",
         )
         with self._lock, self._connection:
@@ -300,6 +301,29 @@ class SQLiteStateStore:
                 ),
             )
 
+    def load_clean_policy(self, session_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT policy_json FROM email_clean_policy WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return _json_object(row["policy_json"])
+
+    def save_clean_policy(self, session_id: str, policy: dict[str, Any]) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO email_clean_policy(session_id, policy_json, updated_at)
+                VALUES(?, ?, datetime('now'))
+                ON CONFLICT(session_id) DO UPDATE SET
+                    policy_json = excluded.policy_json,
+                    updated_at = excluded.updated_at
+                """,
+                (session_id, json.dumps(policy, ensure_ascii=False, sort_keys=True)),
+            )
+
     def load_clean_audit_events(self, session_id: str) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._connection.execute(
@@ -438,6 +462,15 @@ class SQLiteStateStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY(session_id, rule_id),
                     UNIQUE(session_id, action, scope, value)
+                )
+                """
+            )
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS email_clean_policy (
+                    session_id TEXT PRIMARY KEY,
+                    policy_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 )
                 """
             )
