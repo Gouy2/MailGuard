@@ -28,6 +28,8 @@ try:
         run_archive_shadow_workflow,
     )
     from app.cli.render import is_success, print_human
+    from app.daily_report.runner import run_daily_report
+    from app.daily_report.storage import DEFAULT_DAILY_REPORT_DIR
     from app.memory_proposals import (
         approve_memory_proposal,
         reject_memory_proposal,
@@ -61,6 +63,8 @@ except ModuleNotFoundError as exc:  # pragma: no cover - used when imported from
         run_archive_shadow_workflow,
     )
     from server.app.cli.render import is_success, print_human
+    from server.app.daily_report.runner import run_daily_report
+    from server.app.daily_report.storage import DEFAULT_DAILY_REPORT_DIR
     from server.app.memory_proposals import (
         approve_memory_proposal,
         reject_memory_proposal,
@@ -87,6 +91,7 @@ DEFAULT_ARCHIVE_SHADOW_PATH = SERVER_ROOT / "data" / "archive_shadow_results.jso
 RuntimeFactory = Callable[[], Any]
 InputFunc = Callable[[str], str]
 CLI_PRESETS: dict[str, tuple[str, ...]] = {
+    "daily": ("daily-report",),
     "archive-review": ("review-proposals", "--limit", "20", "--unread", "--label"),
     "protected": ("review-proposals", "--limit", "20", "--unread", "--show-protected"),
     "archive-labels": ("proposal-labels",),
@@ -147,6 +152,20 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--limit", type=int, default=20)
     report.add_argument("--unread", action="store_true", help="Only classify unread emails.")
     report.set_defaults(func=_cmd_report, display_command="report")
+
+    daily_report = subparsers.add_parser(
+        "daily-report",
+        help="Run a manual read-only daily report agent loop and write a report artifact.",
+    )
+    daily_report.add_argument("--llm", choices=["mock", "openai"], default="mock")
+    daily_report.add_argument("--limit", type=int, default=20)
+    daily_report.add_argument("--hours", type=int, default=24)
+    daily_report.add_argument("--max-steps", type=int, default=8)
+    daily_report.add_argument("--timeout", type=float, default=120.0)
+    daily_report.add_argument("--model", default="", help="Optional OpenAI model override.")
+    daily_report.add_argument("--out-dir", default=str(DEFAULT_DAILY_REPORT_DIR))
+    daily_report.add_argument("--memory-path", default=str(DEFAULT_MEMORY_PROPOSAL_PATH))
+    daily_report.set_defaults(func=_cmd_daily_report, display_command="daily-report")
 
     review = subparsers.add_parser(
         "review",
@@ -478,6 +497,7 @@ def _command_index(args: list[str]) -> int | None:
 def _preset_help() -> str:
     lines = [
         "Workflow presets:",
+        "  daily            -> daily-report",
         "  archive-review   -> review-proposals --limit 20 --unread --label",
         "  protected        -> review-proposals --limit 20 --unread --show-protected",
         "  archive-labels   -> proposal-labels",
@@ -534,6 +554,25 @@ def _cmd_report(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
         {"limit": args.limit, "unread_only": args.unread},
         session_id=args.session_id,
     )
+
+
+def _cmd_daily_report(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    report = run_daily_report(
+        llm=args.llm,
+        model=args.model,
+        limit=args.limit,
+        hours=args.hours,
+        max_steps=args.max_steps,
+        timeout_sec=args.timeout,
+        memory_path=args.memory_path,
+        output_dir=args.out_dir,
+    )
+    return {
+        "ok": report.get("status") == "ok",
+        "tool": "daily_report",
+        "error": report.get("error", ""),
+        "result": report,
+    }
 
 
 def _cmd_review(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:

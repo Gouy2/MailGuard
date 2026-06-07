@@ -122,6 +122,14 @@ Policy + Memory + User Permission: authorize
 - 约束：本轮不拆 `AgentRuntime`、`ToolRegistry`、`QQImapProvider` 和 `archive_shadow.py`。它们偏长但职责仍相对凝聚，暂时不为行数拆分。
 - 后续：新增功能必须优先落到 workflow/core；CLI、API/SSE 和未来前端只做参数转换、展示和用户交互。
 
+## 2026-06-07 - Daily Report 先做只读 typed action loop
+
+- 决策：M2 先实现手动触发的 Daily Report Agent，采用 bounded typed action loop，而不是 classic ReAct Thought transcript 或直接接 scheduler。
+- 理由：只读 report 能先验证真实 LLM、工具选择、artifact、trace-like 可追溯和真实邮箱读取稳定性，同时避开不可逆写操作风险。
+- 约束：planner 只能选择 `list_recent`、`search`、`get_detail`、`memory`、`finish`；不生成 archive proposal，不批准 proposal，不执行 mailbox mutation。
+- 约束：report run 是本地 artifact，保存 action/observation/error/latency，不保存模型完整私有推理；正文只允许在 detail observation 中截断保存。
+- 后续：手动 mock/openai 路径稳定并完成只读 smoke 后，再评估 scheduler integration；scheduler 只调用 `daily_report.runner`。
+
 ## 2026-05-26 - 文档瘦身
 
 - 决策：主文档收敛为 `project-state.md`、`decisions.md`、`architecture.md`、`testing-and-evaluation.md`、`test-logs/README.md`。

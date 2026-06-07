@@ -21,7 +21,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 py-modules = ["agent_cli", "agent_smoke", "email_cli", "evaluate_email"]
-packages = ["app", "app.archive", "app.cli"]
+packages = ["app", "app.archive", "app.cli", "app.daily_report"]
 
 [project.optional-dependencies]
 memory = [

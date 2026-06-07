@@ -11,6 +11,7 @@ MailGuard 是一个本地优先的邮件管理 Agent 原型。它会读取和分
 - 归档决策分层：`protected`、`candidate`、`proposal`，并为未来 `auto_eligible` 留出空间。
 - Action Proposal + Audit Log：记录 proposal 创建、审批、拒绝、执行和失败。
 - Observed/confirmed memory：从真实标签归纳 sender/domain 倾向，确认后可把低价值 candidate 提升为 proposal。
+- Daily Report Agent：手动触发的只读 typed action loop，可用 mock/OpenAI planner 生成可追溯 report artifact。
 - LLM archive suitability shadow eval：只读评估 candidate/proposal 是否适合归档，不改变真实 proposal。
 - Mock eval、真实邮箱标签评估、proposal/candidate 标签评估、memory proposal confirmation、LLM shadow eval。
 
@@ -30,7 +31,7 @@ scan/search -> classify/filter -> protected/candidate/proposal -> approval -> ex
 
 ```bash
 python3 -m unittest discover -s tests -p 'test*.py'
-python3 -m py_compile server/app/*.py server/app/archive/*.py server/app/cli/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py
+python3 -m py_compile server/app/*.py server/app/archive/*.py server/app/cli/*.py server/app/daily_report/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py
 ```
 
 运行 mock smoke test：
@@ -57,11 +58,14 @@ uv run mailguard archive-labels
 uv run mailguard archive-eval
 uv run mailguard memory
 uv run mailguard memory-list
+uv run mailguard daily
 uv run mailguard shadow
 uv run mailguard shadow-eval
 ```
 
 这些短命令是 workflow presets，底层长命令仍然保留。常用参数可以覆盖，例如 `uv run mailguard archive-review --limit 50 --all`。
+
+`mailguard daily` 默认使用 mock planner，不修改邮箱，会把 report artifact 写入 `server/data/daily_reports/`。接真实 LLM 时使用 `uv run mailguard daily --llm openai`，仍然只读。
 
 `llm-archive-shadow` 默认跳过已评分 item；需要重新评分时加 `--force`。
 新标签会保存 snippet，shadow 默认不再逐封读取邮箱详情；旧标签缺 snippet 时可加 `--fetch-missing-snippet`。用 `--dry-run` 可以只查看输入规模和脱敏边界，不调用 LLM，也不写 shadow 文件。

@@ -31,11 +31,12 @@ scan/search
 - Memory proposal confirmation：把 observed preferences 转成可 approve/reject 的本地 confirmed memory；已确认 `archive_sender` / `archive_domain` 可以把低价值 candidate 提升为 proposal。
 - LLM archive suitability shadow：默认不发送正文，只读评分 candidate/proposal 是否适合归档，并保存本地 shadow 结果用于和真实标签评估。
 - M1.5 结构治理：deterministic classifier 已从 tool 注册文件拆到 `email_classifier.py`；CLI human renderer 和 interactive labeling 已拆到 `app/cli/`；observed/confirmed memory 编排已拆到 `memory_workflow.py`。
+- M2 Daily Report Agent：新增手动触发的只读 `daily_report` 域，支持 bounded typed action loop、mock planner、OpenAI planner、只读工具 adapter 和持久化 report artifact。
 - Mock classifier eval、proposal policy eval、real email label/eval、real proposal label/eval、LLM shadow eval。
 
 ## 进行中
 
-当前进入 M1.5 架构稳定化阶段：先把 archive pipeline 的 core model、plan、policy 边界整理清楚，再继续新增 agent 自动化功能。
+当前进入 M2 Daily Report Agent 阶段：先验证手动触发、只读、可追溯的 daily report loop，再讨论 scheduler 和写操作自动化。
 
 - `server/app/archive/models.py` 定义 archive plan 的 typed boundary，并提供旧 dict 输出兼容层。
 - `server/app/archive/policy.py` 承载 precision-first archive policy。
@@ -46,16 +47,17 @@ scan/search
 - `server/app/memory_workflow.py` 承载 observed memory、memory proposal refresh/list 和 confirmed memory listing 的可复用 workflow。
 - `server/app/email_classifier.py` 承载 deterministic classifier；`email_tools.py` 继续兼容导出 `classify_email`，但不再承载规则细节。
 - `server/app/cli/render.py` 和 `server/app/cli/label.py` 承载 CLI 展示与交互标注；`server/email_cli.py` 保留为 parser、command dispatch 和 runtime adapter。
+- `server/app/daily_report/` 承载 daily report 的 models、planner、runner、storage 和只读 tools；CLI 只负责触发和展示。
 - `server/app/email_proposals.py` 暂时保留为兼容门面和 proposal 状态流转层。
 - `uv run mailguard ...` workflow presets 降低真实测试命令负担；底层长命令保持兼容。
 - 测试已拆分为按领域命名的多个模块；后续新增测试应优先放入对应模块。
 
 ## 下一步
 
-1. 运行完整 M1.5 回归，确认 CLI adapter 拆分、classifier 拆分和 memory workflow 下沉均保持行为兼容。
-2. 结构稳定后，再回到真实邮箱只读 candidate/proposal 人工标注、confirmed memory 校验和 LLM shadow readiness。
-3. 基于 readiness gate 的结果，决定 LLM scorer 是否能从 shadow mode 进入 proposal 辅助。
-4. 继续按领域维护测试，避免重新形成单文件堆积。
+1. 对 `daily-report --llm mock` 和 `mailguard daily --llm mock` 做本地 smoke，确认 artifact 和 CLI 输出稳定。
+2. 在用户准备真实环境测试前，提前给出只读 OpenAI + 真实邮箱 smoke 步骤；不执行真实邮箱写操作。
+3. 根据真实 report 质量，决定是否要加入 report quality eval；暂不做自动反馈闭环。
+4. daily report 稳定后，再讨论 scheduler integration；scheduler 只调用 runner，不承载 agent 逻辑。
 5. 暂不拆 `AgentRuntime`、`ToolRegistry`、`QQImapProvider` 和 `archive_shadow.py`；它们偏长但职责仍相对凝聚，先避免为行数拆分。
 
 ## 协作约定
@@ -70,13 +72,15 @@ scan/search
 - 规则 classifier 有 mock 过拟合风险，真实质量必须靠人工标签评估。
 - confirmed memory 目前只启用 sender/domain 的保守 promotion；category 级 memory 仍不参与 policy，避免规则变得过宽。
 - LLM shadow 当前只提供评估信号；如果真实 false positive 偏高，不能进入 proposal policy。
+- Daily Report Agent 当前只读；OpenAI planner 只能选择 `list_recent`、`search`、`get_detail`、`memory`、`finish`，不能生成 proposal 或执行邮箱写操作。
 - `email_tools.py` 和 `email_cli.py` 已明显瘦身，但仍是关键 adapter；后续新增功能必须优先落到 workflow/core，再由 CLI 或 API 调用，避免重新堆回入口文件。
 - 真实邮箱写操作虽然有审批边界，但自动化 policy 尚未实现，不能提前承诺“自动保持邮箱干净”。
 
 ## 验证基线
 
-- `python3 -m py_compile server/app/*.py server/app/archive/*.py server/app/cli/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py`：通过。
+- `python3 -m py_compile server/app/*.py server/app/archive/*.py server/app/cli/*.py server/app/daily_report/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py`：通过。
 - `python3 -m unittest tests.test_email_tools`：110 tests OK，1 skipped。
-- `python3 -m unittest discover -s tests -p 'test*.py'`：110 tests OK，1 skipped。
+- `python3 -m unittest discover -s tests -p 'test*.py'`：117 tests OK，1 skipped。
+- `python3 -m unittest tests.test_daily_report`：7 tests OK。
 - `python3 server/email_cli.py eval-proposals --limit 36`：mock proposal policy precision 1.0，recall 0.5385，false positive 0。
 - `python3 server/email_cli.py review-proposals --limit 12 --all`：mock scan 输出 3 proposals、2 candidates、7 protected、0 no action。

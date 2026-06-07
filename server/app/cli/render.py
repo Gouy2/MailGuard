@@ -160,6 +160,31 @@ def _print_report(result: dict[str, Any], out: TextIO) -> None:
             print(f"   Reasons: {'; '.join(str(reason) for reason in reasons)}", file=out)
 
 
+def _print_daily_report(result: dict[str, Any], out: TextIO) -> None:
+    provider = result.get("provider", {})
+    print(f"Run: {result.get('run_id', '')} [{result.get('status', '')}]", file=out)
+    print(f"Planner: {result.get('planner', '')}", file=out)
+    print(f"Provider: {provider.get('provider', '')}", file=out)
+    mailbox = provider.get("mailbox_display") or provider.get("mailbox") or provider.get("selected_mailbox")
+    if mailbox:
+        print(f"Mailbox: {mailbox}", file=out)
+    print(f"Artifact: {result.get('artifact_path', '')}", file=out)
+    print(f"Steps: {len(result.get('steps', []))}", file=out)
+    print(f"Key items: {len(result.get('items', []))}", file=out)
+    for index, item in enumerate(result.get("items", []), start=1):
+        print(
+            f"{index}. {item.get('email_id', '')} [{item.get('priority', '')}] "
+            f"{_clip(item.get('subject', ''), 140)}",
+            file=out,
+        )
+        print(f"   From: {_format_sender(item)}", file=out)
+        if item.get("reason"):
+            print(f"   Reason: {_clip(item.get('reason', ''), 180)}", file=out)
+    if result.get("report"):
+        print("Report:", file=out)
+        print(result.get("report", ""), file=out)
+
+
 def _print_review(result: dict[str, Any], out: TextIO) -> None:
     print(f"Provider: {result.get('provider', '')}", file=out)
     print(f"Fetched: {result.get('fetched', 0)}", file=out)
@@ -761,6 +786,7 @@ COMMAND_RENDERERS: dict[str, Callable[[argparse.Namespace, dict[str, Any], TextI
     "search": _result_renderer(_print_email_list),
     "detail": _render_detail,
     "report": _result_renderer(_print_report),
+    "daily-report": _result_renderer(_print_daily_report),
     "review": _render_review,
     "label": _result_renderer(_print_label),
     "labels": _result_renderer(_print_labels),
