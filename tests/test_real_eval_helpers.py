@@ -32,7 +32,7 @@ from server.app.auth import configured_auth_token, require_api_token
 from server.app.email_eval import evaluate_email_classifier
 from server.app.email_provider import MockEmailProvider
 from server.app.email_proposals import approve_action_proposal, execute_approved_action_proposals
-from server.app.email_tools import classify_email
+from server.app.email_classifier import classify_email
 from server.app.llm_email_classifier import _normalize_decision, _parse_json_object
 from server.app.memory import MemoryStore
 from server.app.memory_proposals import (
@@ -40,6 +40,11 @@ from server.app.memory_proposals import (
     list_memory_proposals,
     refresh_memory_proposals,
     reject_memory_proposal,
+)
+from server.app.memory_workflow import (
+    run_confirmed_memory_workflow,
+    run_memory_proposals_workflow,
+    run_observed_memory_workflow,
 )
 from server.app.proposal_eval import evaluate_archive_proposal_policy
 from server.app.provider_factory import create_email_provider
@@ -249,6 +254,54 @@ class RealProposalEvalTests(unittest.TestCase):
         self.assertEqual("sender", insight["group_type"])
         self.assertEqual("medium", insight["confidence"])
         self.assertEqual("archive_sender", report["proposed_preferences"][0]["proposal"])
+
+    def test_memory_workflow_reuses_label_artifacts_without_cli_runtime(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            labels_path = Path(temp_dir) / "real_proposal_labels.json"
+            memory_path = Path(temp_dir) / "memory_proposals.json"
+            save_real_proposal_label(
+                labels_path,
+                proposal={
+                    "candidate_id": "candidate-1",
+                    "item_type": "candidate",
+                    "email_id": "imap-1",
+                    "action": "archive",
+                    "risk_level": "candidate",
+                    "from_email": "notification@facebookmail.example",
+                    "category": "notification",
+                    "subject": "New notification",
+                },
+                label="archive",
+            )
+            save_real_proposal_label(
+                labels_path,
+                proposal={
+                    "candidate_id": "candidate-2",
+                    "item_type": "candidate",
+                    "email_id": "imap-2",
+                    "action": "archive",
+                    "risk_level": "candidate",
+                    "from_email": "notification@facebookmail.example",
+                    "category": "notification",
+                    "subject": "Another notification",
+                },
+                label="archive",
+            )
+
+            observed = run_observed_memory_workflow(labels_path=labels_path, min_samples=2)
+            proposals = run_memory_proposals_workflow(
+                labels_path=labels_path,
+                memory_path=memory_path,
+                min_samples=2,
+            )
+            sender = next(item for item in proposals["proposals"] if item["memory_type"] == "archive_sender")
+            approve_memory_proposal(memory_path, sender["proposal_id"])
+            confirmed = run_confirmed_memory_workflow(memory_path=memory_path)
+
+        self.assertEqual(2, observed["report"]["decisive_count"])
+        self.assertGreaterEqual(proposals["created_count"], 2)
+        self.assertFalse(proposals["mailbox_mutation"])
+        self.assertEqual(["notification@facebookmail.example"], confirmed["confirmed_memory"]["archive_senders"])
 
     def test_memory_proposals_can_be_approved_and_rejected_locally(self) -> None:
         label_data = {

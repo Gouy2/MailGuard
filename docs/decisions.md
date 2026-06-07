@@ -1,6 +1,6 @@
 # 架构决策
 
-更新时间：2026-05-27
+更新时间：2026-06-07
 
 ## 2026-05-26 - 项目定位
 
@@ -113,6 +113,14 @@ Policy + Memory + User Permission: authorize
 - 理由：shadow scoring 未来可能由 CLI、API/SSE 或后台任务触发；如果流程留在 CLI 中，后续会重复实现缓存、dry-run、latency 和错误处理逻辑。
 - 约束：CLI 命令、输出结构、文件 schema、progress 文案和真实邮箱行为保持兼容；workflow 通过 callback 获取缺失 snippet 的邮件详情，不直接依赖 CLI runtime。
 - 后续：继续评估 `observed-memory` / `memory-proposals` 是否需要下沉为 workflow，避免 CLI 重新膨胀。
+
+## 2026-06-07 - M1.5 结构治理优先 adapter/core 边界
+
+- 决策：CLI 保留为 adapter，human renderer 和 interactive labeling 下沉到 `server/app/cli/`；observed/confirmed memory 编排下沉到 `server/app/memory_workflow.py`；deterministic classifier 下沉到 `server/app/email_classifier.py`。
+- 理由：当前最主要的结构风险是入口文件吸收 workflow、展示、交互和分类规则；先按复用边界拆分，可以支撑未来 API/SSE、后台任务和前端，而不复制 CLI 逻辑。
+- 约束：不改变 CLI 命令、tool 名称、权限语义、artifact schema、SQLite schema 或真实邮箱行为；`email_tools.py` 继续 re-export `classify_email` 兼容旧调用。
+- 约束：本轮不拆 `AgentRuntime`、`ToolRegistry`、`QQImapProvider` 和 `archive_shadow.py`。它们偏长但职责仍相对凝聚，暂时不为行数拆分。
+- 后续：新增功能必须优先落到 workflow/core；CLI、API/SSE 和未来前端只做参数转换、展示和用户交互。
 
 ## 2026-05-26 - 文档瘦身
 

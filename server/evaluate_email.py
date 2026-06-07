@@ -8,7 +8,7 @@ import json
 from app.email_eval import evaluate_email_classifier
 from app.email_eval_report import write_eval_report
 from app.email_provider import MockEmailProvider
-from app.email_tools import classify_email
+from app.email_classifier import classify_email
 from app.llm_email_classifier import LLMEmailClassifier
 
 

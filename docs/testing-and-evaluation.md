@@ -7,13 +7,13 @@
 ```bash
 python3 -m unittest discover -s tests -p 'test*.py'
 python3 -m unittest tests.test_email_tools
-python3 -m py_compile server/app/*.py server/app/archive/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py
+python3 -m py_compile server/app/*.py server/app/archive/*.py server/app/cli/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py
 ```
 
 当前基线：
 
 ```text
-109 tests OK (1 skipped when FastAPI is unavailable in root python)
+110 tests OK (1 skipped when FastAPI is unavailable in root python)
 py_compile passed
 ```
 

@@ -22,7 +22,7 @@ from server.app.auth import configured_auth_token, require_api_token
 from server.app.email_eval import evaluate_email_classifier
 from server.app.email_provider import MockEmailProvider
 from server.app.email_proposals import approve_action_proposal, execute_approved_action_proposals
-from server.app.email_tools import classify_email
+from server.app.email_classifier import classify_email
 from server.app.llm_email_classifier import _normalize_decision, _parse_json_object
 from server.app.memory import MemoryStore
 from server.app.proposal_eval import evaluate_archive_proposal_policy

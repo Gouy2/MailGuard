@@ -12,7 +12,7 @@ FastAPI / CLI
      -> TraceLogger
      -> Email tools
         -> EmailProvider
-        -> classifier / proposal policy / scheduler / eval
+        -> classifier / proposal policy / scheduler / eval workflows
 ```
 
 主要入口：
@@ -20,9 +20,12 @@ FastAPI / CLI
 - `server/app/main.py`：FastAPI、SSE chat、approval/trace API。
 - `server/app/agent.py`：LLM tool loop、mode control、manual tool execution、approval。
 - `server/app/tools.py`：tool registry、schema validation、权限分级、pending approval。
-- `server/app/email_tools.py`：邮件工具注册、规则分类器、scheduler、eval。
+- `server/app/email_tools.py`：邮件工具注册 adapter；内部按 provider/read、preferences、scheduler、proposal、eval、mutation 分段。
+- `server/app/email_classifier.py`：deterministic classifier、规则常量和分类 helper。
 - `server/app/archive/`：archive plan/action 的 typed models、precision-first policy、无副作用计划构造和 audit payload。
 - `server/app/archive_shadow_workflow.py`：LLM archive shadow 的 workflow 编排；可被 CLI、未来 API/SSE 或后台任务复用。
+- `server/app/memory_workflow.py`：observed memory、memory proposal refresh/list 和 confirmed memory 的 workflow 编排。
+- `server/app/cli/`：本地 CLI 的 render 和 interactive labeling adapter；不承载业务决策。
 - `server/app/email_proposals.py`：archive proposal 兼容门面、审批状态流转、approved execution、audit log。
 - `server/app/artifacts.py`：本地 JSON artifact 读写边界；用于真实标签、LLM shadow results 和 memory proposal review data。
 - `server/app/proposal_eval.py` / `server/app/real_proposal_eval.py`：proposal policy mock eval 和真实 proposal 标签评估。
@@ -30,6 +33,12 @@ FastAPI / CLI
 - `server/app/memory.py` / `server/app/sqlite_state.py`：进程内状态和可选 SQLite。
 - `server/email_cli.py`：本地邮件工具、proposal、label、eval 测试入口。
 - `server/agent_cli.py`：HTTP chat / pending / approve / reject / trace CLI。
+
+## Adapter 边界
+
+`email_cli.py` 当前只负责 argparse、workflow preset 展开、runtime tool 调用和少量命令参数转换。人类可读输出在 `app.cli.render`，交互式本地标注在 `app.cli.label`。
+
+CLI、未来 API/SSE 和后台任务应复用 `archive_shadow_workflow.py`、`memory_workflow.py`、`archive/` core 和 `email_proposals.py`，而不是复制缓存、artifact、latency、label 或 proposal 状态逻辑。
 
 ## Tool 权限
 
@@ -195,6 +204,8 @@ Memory 分三层：
 当前已有只读 `observed-memory` CLI，从 proposal/candidate 标签中归纳 sender/domain/category 的 archive/keep 倾向，并输出 observed-only proposed preferences。
 
 当前已有本地 `memory-proposals` / `approve-memory` / `reject-memory` CLI，把 observed preferences 转成可确认的 memory proposal。批准后只写入本地 confirmed memory 文件，不自动写入 email preferences。
+
+`memory_workflow.py` 承载 observed report、memory proposal refresh/list 和 confirmed memory listing 的可复用编排。CLI 只负责传入 labels/memory path、min samples、limit/status 并展示结果。
 
 当前 policy 只读取两类 confirmed memory：
 
