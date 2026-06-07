@@ -7,6 +7,18 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .cleaner.preview import DEFAULT_HOURS as DEFAULT_CLEAN_HOURS
+from .cleaner.preview import DEFAULT_LIMIT as DEFAULT_CLEAN_LIMIT
+from .cleaner.preview import run_clean_preview
+from .cleaner.run import clean_audit_log, clean_policy_status
+from .cleaner.teach import (
+    DEFAULT_TEACH_HOURS,
+    DEFAULT_TEACH_LIMIT,
+    approve_clean_rule,
+    disable_clean_rule,
+    list_clean_rules,
+    run_teach_workflow,
+)
 from .email_classifier import classify_email
 from .email_eval import evaluate_email_classifier
 from .email_eval_report import write_eval_report
@@ -340,6 +352,63 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
             memory_store=context.memory_store,
             session_id=context.session_id,
             proposal_id=proposal_id,
+            email_id=email_id,
+            limit=limit,
+        )
+
+    def email_clean_teach(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        instruction = _required_string(args, "instruction")
+        llm = str(args.get("llm", "heuristic")).strip().lower() or "heuristic"
+        model = str(args.get("model", "")).strip()
+        limit = _bounded_int(args.get("limit"), default=DEFAULT_TEACH_LIMIT, minimum=1, maximum=500)
+        hours = _bounded_int(args.get("hours"), default=DEFAULT_TEACH_HOURS, minimum=1, maximum=24 * 365)
+        return run_teach_workflow(
+            instruction=instruction,
+            provider=email_provider,
+            memory_store=context.memory_store,
+            session_id=context.session_id,
+            llm=llm,
+            model=model,
+            limit=limit,
+            hours=hours,
+        )
+
+    def email_clean_rules(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        status = str(args.get("status", "")).strip().lower()
+        limit = _bounded_int(args.get("limit"), default=100, minimum=1, maximum=500)
+        return list_clean_rules(context.memory_store, context.session_id, status=status, limit=limit)
+
+    def email_clean_approve_rule(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        rule_id = _required_string(args, "rule_id")
+        return approve_clean_rule(context.memory_store, context.session_id, rule_id)
+
+    def email_clean_disable_rule(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        rule_id = _required_string(args, "rule_id")
+        return disable_clean_rule(context.memory_store, context.session_id, rule_id)
+
+    def email_clean_preview(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        limit = _bounded_int(args.get("limit"), default=DEFAULT_CLEAN_LIMIT, minimum=1, maximum=500)
+        hours = _bounded_int(args.get("hours"), default=DEFAULT_CLEAN_HOURS, minimum=1, maximum=24 * 365)
+        return run_clean_preview(
+            provider=email_provider,
+            memory_store=context.memory_store,
+            session_id=context.session_id,
+            classifier=classify_email,
+            limit=limit,
+            hours=hours,
+        )
+
+    def email_clean_policy(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        return clean_policy_status(context.memory_store, context.session_id)
+
+    def email_clean_audit(args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        run_id = str(args.get("run_id", "")).strip()
+        email_id = str(args.get("email_id", "")).strip()
+        limit = _bounded_int(args.get("limit"), default=100, minimum=1, maximum=500)
+        return clean_audit_log(
+            memory_store=context.memory_store,
+            session_id=context.session_id,
+            run_id=run_id,
             email_id=email_id,
             limit=limit,
         )
@@ -872,6 +941,145 @@ def register_email_tools(registry: ToolRegistry, provider: EmailProvider | None 
                 }
             ),
             handler=email_audit_log,
+            permission=ToolPermission.READ,
+        )
+    )
+    # Inbox Cleaner tools expose teach/rule/preview state without mailbox mutation.
+    registry.register(
+        ToolSpec(
+            name="email_clean_teach",
+            description="Turn a natural-language inbox cleaning preference into proposed clean/protect rules with an impact preview. Never enables rules or mutates the mailbox.",
+            input_schema=_schema(
+                {
+                    "instruction": {"type": "string", "description": "User cleaning preference, such as newsletters from a sender should be archived."},
+                    "llm": {
+                        "type": "string",
+                        "description": "Parser mode: heuristic or openai.",
+                        "default": "heuristic",
+                    },
+                    "model": {"type": "string", "description": "Optional OpenAI model override when llm=openai."},
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum recent emails to inspect for impact preview.",
+                        "default": DEFAULT_TEACH_LIMIT,
+                        "minimum": 1,
+                        "maximum": 500,
+                    },
+                    "hours": {
+                        "type": "integer",
+                        "description": "Lookback window for impact preview.",
+                        "default": DEFAULT_TEACH_HOURS,
+                        "minimum": 1,
+                        "maximum": 24 * 365,
+                    },
+                },
+                required=["instruction"],
+            ),
+            handler=email_clean_teach,
+            permission=ToolPermission.WRITE,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_clean_rules",
+            description="List proposed, enabled, or disabled inbox cleaner rules for this session.",
+            input_schema=_schema(
+                {
+                    "status": {"type": "string", "description": "Optional status filter: proposed, enabled, or disabled."},
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum rules to return.",
+                        "default": 100,
+                        "minimum": 1,
+                        "maximum": 500,
+                    },
+                }
+            ),
+            handler=email_clean_rules,
+            permission=ToolPermission.READ,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_clean_approve_rule",
+            description="Approve one proposed inbox cleaner rule. This affects future auto-eligible decisions and requires explicit approval.",
+            input_schema=_schema(
+                {
+                    "rule_id": {"type": "string", "description": "Clean rule id."},
+                },
+                required=["rule_id"],
+            ),
+            handler=email_clean_approve_rule,
+            permission=ToolPermission.DANGEROUS,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_clean_disable_rule",
+            description="Disable one inbox cleaner rule so it no longer affects clean preview.",
+            input_schema=_schema(
+                {
+                    "rule_id": {"type": "string", "description": "Clean rule id."},
+                },
+                required=["rule_id"],
+            ),
+            handler=email_clean_disable_rule,
+            permission=ToolPermission.WRITE,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_clean_preview",
+            description="Build a dry-run inbox cleaner preview with auto_eligible, protected, candidate, and no_action buckets. Does not mutate the mailbox.",
+            input_schema=_schema(
+                {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum recent emails to inspect.",
+                        "default": DEFAULT_CLEAN_LIMIT,
+                        "minimum": 1,
+                        "maximum": 500,
+                    },
+                    "hours": {
+                        "type": "integer",
+                        "description": "Lookback window for recent emails.",
+                        "default": DEFAULT_CLEAN_HOURS,
+                        "minimum": 1,
+                        "maximum": 24 * 365,
+                    },
+                }
+            ),
+            handler=email_clean_preview,
+            permission=ToolPermission.WRITE,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_clean_policy",
+            description="Inspect the saved cleaner automation policy for this session.",
+            input_schema=_schema({}),
+            handler=email_clean_policy,
+            permission=ToolPermission.READ,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="email_clean_audit",
+            description="Read clean execution audit events for this session.",
+            input_schema=_schema(
+                {
+                    "run_id": {"type": "string", "description": "Optional clean run id filter."},
+                    "email_id": {"type": "string", "description": "Optional email id filter."},
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum audit events to return.",
+                        "default": 100,
+                        "minimum": 1,
+                        "maximum": 500,
+                    },
+                }
+            ),
+            handler=email_clean_audit,
             permission=ToolPermission.READ,
         )
     )

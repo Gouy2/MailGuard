@@ -36,11 +36,12 @@ scan/search
 - M2.2 Clean Rule teaching：新增 `cleaner.rules` 和 `cleaner.teach`，支持把自然语言清理偏好转成 proposed clean/protect rules；`mailguard teach` 创建 proposed rules 并展示只读 impact preview，`mailguard rules` / `mailguard rule approve|disable` 管理规则状态。
 - M2.3 Audited clean execution：新增 `cleaner.run` 和 clean audit events；`mailguard clean-run` 默认只读预览，只有显式 `--yes` 才执行 `auto_eligible` archive，并记录 started/succeeded/failed。
 - M2.4 Cleaner automation policy：新增 `cleaner.policy`、`mailguard clean-policy` 和 `clean-run --policy`；policy 默认关闭，默认只允许 enabled clean rule 自动执行，不允许 legacy confirmed memory 自动执行，并受 `max_execute` 限制。
+- M3 Agent Console 基础：新增 `console/` React 控制台、实时 `trace` SSE、Cleaner HTTP API 和 `email_clean_*` agent tools，用于多轮 chat、tool chain、pending approval、teach/rules/preview 可视化；当前支持 markdown 渲染、Enter 发送、Settings 面板和追加式 System Prompt。
 - Mock classifier eval、proposal policy eval、real email label/eval、real proposal label/eval、LLM shadow eval。
 
 ## 进行中
 
-当前主线已 pivot 到 Inbox Cleaner：用户通过自然语言教规则，规则经用户批准后才授权 `clean-preview` / `clean-run` 的 `auto_eligible`。本阶段已经把 scheduler 前置安全门收敛为显式 automation policy；下一步仍是先用真实环境只读验证误伤风险和解释质量，再谨慎测试 audited execution、回滚/恢复和 scheduler。Daily Report 保留为只读实验/审计能力，不再作为核心产品路线扩展。
+当前主线已 pivot 到 Inbox Cleaner：用户通过自然语言教规则，规则经用户批准后才授权 `clean-preview` / `clean-run` 的 `auto_eligible`。本阶段正在加入 Agent Console，让 chat、实时 tool trace、pending approval 和 cleaner workflow 可视化；下一步仍是先用 mock/read-only 环境验证控制台，再谨慎测试 audited execution、回滚/恢复和 scheduler。Daily Report 保留为只读实验/审计能力，不再作为核心产品路线扩展。
 
 - `server/app/archive/models.py` 定义 archive plan 的 typed boundary，并提供旧 dict 输出兼容层。
 - `server/app/archive/policy.py` 承载 precision-first archive policy。
@@ -53,6 +54,8 @@ scan/search
 - `server/app/cli/render.py` 和 `server/app/cli/label.py` 承载 CLI 展示与交互标注；`server/email_cli.py` 保留为 parser、command dispatch 和 runtime adapter。
 - `server/app/cleaner/` 承载 Inbox Cleaner dry-run preview、clean rule model、teach workflow、audited execution、artifact storage 和 auto-eligible 边界；CLI 只负责触发和展示。
 - `server/app/cleaner/policy.py` 承载 cleaner automation policy；`MemoryStore` / SQLite 持久化 policy，未来 scheduler 应复用 `clean-run --policy` 等价 workflow。
+- `console/` 承载 React Agent Console；它只通过 FastAPI / SSE / REST 调用后端，不复制 cleaner、proposal、approval 或 provider 逻辑。
+- `server/app/main.py` 当前除 chat/pending/trace 外，也暴露 `/cleaner/teach`、`/cleaner/rules`、`/cleaner/preview`、`/cleaner/policy` 和 `/cleaner/audit` 给 Console 使用；同一组 API 同时挂载在根路径和 `/api` 前缀，兼容 Vite proxy 与 FastAPI `/console`。
 - `server/app/daily_report/` 承载 daily report 的 models、planner、runner、storage 和只读 tools；CLI 只负责触发和展示。
 - `server/app/email_proposals.py` 暂时保留为兼容门面和 proposal 状态流转层。
 - `uv run mailguard ...` workflow presets 降低真实测试命令负担；底层长命令保持兼容。
@@ -61,11 +64,12 @@ scan/search
 ## 下一步
 
 1. 对 `mailguard teach`、`mailguard rules`、`mailguard clean`、`mailguard clean-policy` 做 mock/local smoke，确认 proposed rule、approve/disable、clean preview artifact 和 policy gate 稳定。
-2. 在用户准备真实环境测试前，提前给出只读 teach/clean preview smoke 步骤；不执行真实邮箱写操作。
-3. 基于真实 clean preview 结果评估启用规则后的 `auto_eligible` 是否足够保守；真实 `clean-run --yes` 测试必须单独通知并限定少量邮件。
-4. 设计回滚/恢复策略：clean audit 已记录 archive 结果，但还没有“一键恢复到 INBOX”的产品能力。
-5. Scheduler integration 只能调用 policy-gated cleaner workflow，不能复用人工 `--yes` 语义；接入前需要运行记录、失败处理和恢复策略。
-6. Daily Report 暂不继续扩展为主线；后续只在需要清理摘要或审计摘要时复用。
+2. 对 Agent Console 做浏览器 mock smoke：启动 FastAPI + Vite，验证 chat、实时 trace、pending approve/reject、Cleaner teach/rules/preview。当前 build 已通过，但本轮环境无法绑定 localhost，也无法打开 `file://`，所以视觉/交互验收需在用户本地执行。
+3. 在用户准备真实环境测试前，提前给出只读 teach/clean preview/console smoke 步骤；不执行真实邮箱写操作。
+4. 基于真实 clean preview 结果评估启用规则后的 `auto_eligible` 是否足够保守；真实 `clean-run --yes` 或 Console approve 测试必须单独通知并限定少量邮件。
+5. 设计回滚/恢复策略：clean audit 已记录 archive 结果，但还没有“一键恢复到 INBOX”的产品能力。
+6. Scheduler integration 只能调用 policy-gated cleaner workflow，不能复用人工 `--yes` 语义；接入前需要运行记录、失败处理和恢复策略。
+7. Daily Report 暂不继续扩展为主线；后续只在需要清理摘要或审计摘要时复用。
 
 ## 协作约定
 
@@ -87,13 +91,12 @@ scan/search
 - Daily Report Agent 当前只读且已降级为实验/审计能力；OpenAI planner 不能生成 proposal 或执行邮箱写操作。
 - `email_tools.py` 和 `email_cli.py` 已明显瘦身，但仍是关键 adapter；后续新增功能必须优先落到 workflow/core，再由 CLI 或 API 调用，避免重新堆回入口文件。
 - 自动化 policy 已实现为 scheduler 前置门禁，但 scheduler、回滚/恢复和用户可见运行记录尚未实现，不能提前承诺“无人值守长期保持邮箱干净”。
+- Agent Console 支持 pending approve；连接真实 provider 时 approve 会执行真实写操作。真实写测试前必须先确认 pending tool、参数、provider 和测试范围。
 
 ## 验证基线
 
-- `python3 -m py_compile server/app/*.py server/app/archive/*.py server/app/cleaner/*.py server/app/cli/*.py server/app/daily_report/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py`：通过。
-- `python3 -m unittest tests.test_email_tools`：110 tests OK，1 skipped。
-- `python3 -m unittest discover -s tests -p 'test*.py'`：139 tests OK，1 skipped。
-- `python3 -m unittest tests.test_daily_report`：7 tests OK。
-- `python3 -m unittest tests.test_sqlite_persistence tests.test_cleaner`：28 tests OK。
-- `python3 server/email_cli.py eval-proposals --limit 36`：mock proposal policy precision 1.0，recall 0.5385，false positive 0。
+- `server/.venv/bin/python -m unittest discover -s tests -p 'test*.py'`：146 tests OK。
+- `server/.venv/bin/python -m py_compile server/app/*.py server/app/archive/*.py server/app/cleaner/*.py server/app/cli/*.py server/app/daily_report/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py`：通过。
+- `cd console && npm run build`：通过，`tsc -b && vite build` 成功。
+- `server/.venv/bin/python server/email_cli.py eval-proposals --limit 36`：mock proposal policy precision 1.0，recall 0.5385，false positive 0。
 - `python3 server/email_cli.py review-proposals --limit 12 --all`：mock scan 输出 3 proposals、2 candidates、7 protected、0 no action。

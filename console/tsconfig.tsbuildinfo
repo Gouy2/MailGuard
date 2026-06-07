@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/format.ts","./src/main.tsx","./src/types.ts","./src/components/cleanersummary.tsx","./src/components/markdowntext.tsx","./src/components/statusitem.tsx","./src/components/traceicon.tsx"],"version":"5.9.3"}

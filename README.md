@@ -5,6 +5,7 @@ MailGuard 是一个本地优先的邮箱清理 Agent 原型。当前主线是安
 ## 核心能力
 
 - FastAPI + SSE Agent runtime，支持 OpenAI tool calling。
+- React Agent Console：本地开发调试控制台，支持多轮 chat、实时 trace、pending approval 和 cleaner workflow 可视化。
 - typed tool registry，包含 JSON Schema 参数校验和权限分级。
 - Human-in-the-loop 审批：真实邮箱写操作必须先进入 pending/proposal。
 - QQ/Foxmail IMAP provider：recent、detail、search、status、mailboxes，以及审批后的 mark-read、archive、star、draft。
@@ -51,6 +52,16 @@ cd server
 uv sync
 uv run uvicorn app.main:app --reload
 ```
+
+启动 Agent Console：
+
+```bash
+cd console
+npm install
+npm run dev
+```
+
+Console 默认使用 `/api` 作为 API Base。Vite dev 会把 `/api` 代理到 `http://127.0.0.1:8000`；FastAPI 也会同时暴露 `/api/*`，所以构建产物挂在 `/console` 时无需手动改 API Base。如果配置了 `MAILGUARD_AUTH_TOKEN`，在 Console 顶部填写同一个 token。Console 支持 approve/reject pending tool call；连接真实邮箱时，approve 会执行对应真实写操作，测试前必须先确认 provider、session 和 pending 参数。
 
 只读审核 archive proposal/candidate：
 

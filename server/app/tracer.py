@@ -57,21 +57,21 @@ class TraceLogger:
         )
         return trace_id
 
-    def log(self, event: TraceEvent) -> None:
+    def log(self, event: TraceEvent) -> dict[str, Any]:
         record = asdict(event)
         record["payload"] = redact_for_trace(record.get("payload", {}))
         self._append(event.trace_id, record)
+        return record
 
-    def log_event(self, trace_id: str, event: str, payload: dict[str, Any] | None = None) -> None:
-        self._append(
-            trace_id,
-            {
-                "trace_id": trace_id,
-                "event": event,
-                "timestamp": _now(),
-                "payload": redact_for_trace(payload or {}),
-            },
-        )
+    def log_event(self, trace_id: str, event: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        record = {
+            "trace_id": trace_id,
+            "event": event,
+            "timestamp": _now(),
+            "payload": redact_for_trace(payload or {}),
+        }
+        self._append(trace_id, record)
+        return record
 
     def finish_turn(
         self,
@@ -82,7 +82,7 @@ class TraceLogger:
         tool_calls: int = 0,
         llm_calls: int = 0,
         elapsed_ms: float | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "status": status,
             "assistant_text": assistant_text,
@@ -91,7 +91,7 @@ class TraceLogger:
         }
         if elapsed_ms is not None:
             payload["elapsed_ms"] = elapsed_ms
-        self.log_event(trace_id, "turn_end", payload)
+        return self.log_event(trace_id, "turn_end", payload)
 
     def read_trace(self, trace_id: str) -> list[dict[str, Any]]:
         if not _valid_trace_id(trace_id):

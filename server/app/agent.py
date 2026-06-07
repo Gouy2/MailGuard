@@ -256,12 +256,15 @@ class AgentRuntime:
     ) -> dict[str, Any]:
         return self.execute_tool(name, arguments, session_id=session_id, trace_id=trace_id)
 
-    def stream_chat(self, session_id: str, message: str, mode: str = "agent"):
+    def stream_chat(self, session_id: str, message: str, mode: str = "agent", system_prompt: str = ""):
         turn_started_at = time.perf_counter()
         session_id = session_id.strip() or "default"
         self.memory_store.append(session_id, "user", message)
         trace_id = self.tracer.start_turn(session_id, mode, message)
         yield _sse_event("status", {"trace_id": trace_id, "session_id": session_id, "mode": mode})
+        turn_start = _latest_trace_event(self.tracer, trace_id)
+        if turn_start:
+            yield _sse_event("trace", turn_start)
 
         client = _openai_client()
         if client is None:
@@ -270,7 +273,7 @@ class AgentRuntime:
                 yield _sse_event("token", {"trace_id": trace_id, "delta": chunk, "text": assistant_text})
             self.memory_store.append(session_id, "assistant", assistant_text)
             summary = _turn_summary(turn_started_at, tool_calls=0, llm_calls=0)
-            self.tracer.finish_turn(
+            finish_record = self.tracer.finish_turn(
                 trace_id,
                 status="fallback",
                 assistant_text=assistant_text,
@@ -278,17 +281,23 @@ class AgentRuntime:
                 llm_calls=0,
                 elapsed_ms=summary["elapsed_ms"],
             )
+            yield _sse_event("trace", finish_record)
             yield _sse_event("done", {"trace_id": trace_id, "text": assistant_text, **summary})
             return
 
         try:
             if mode == "simple":
-                assistant_text, llm_calls = self._run_simple(client, session_id, trace_id)
+                assistant_text, llm_calls = yield from self._run_simple_stream(
+                    client,
+                    session_id,
+                    trace_id,
+                    system_prompt=system_prompt,
+                )
                 for chunk in _chunks(assistant_text):
                     yield _sse_event("token", {"trace_id": trace_id, "delta": chunk, "text": assistant_text})
                 self.memory_store.append(session_id, "assistant", assistant_text)
                 summary = _turn_summary(turn_started_at, tool_calls=0, llm_calls=llm_calls)
-                self.tracer.finish_turn(
+                finish_record = self.tracer.finish_turn(
                     trace_id,
                     status="ok",
                     assistant_text=assistant_text,
@@ -296,21 +305,23 @@ class AgentRuntime:
                     llm_calls=llm_calls,
                     elapsed_ms=summary["elapsed_ms"],
                 )
+                yield _sse_event("trace", finish_record)
                 yield _sse_event("done", {"trace_id": trace_id, "text": assistant_text, **summary})
                 return
 
-            assistant_text, tool_calls, llm_calls, turn_status = self._run_agent(
+            assistant_text, tool_calls, llm_calls, turn_status = yield from self._run_agent_stream(
                 client,
                 session_id,
                 trace_id,
                 mode=mode,
+                system_prompt=system_prompt,
             )
             for chunk in _chunks(assistant_text):
                 yield _sse_event("token", {"trace_id": trace_id, "delta": chunk, "text": assistant_text})
             self.memory_store.append(session_id, "assistant", assistant_text)
             summary = _turn_summary(turn_started_at, tool_calls=tool_calls, llm_calls=llm_calls)
             if turn_status != "pending":
-                self.tracer.finish_turn(
+                finish_record = self.tracer.finish_turn(
                     trace_id,
                     status=turn_status,
                     assistant_text=assistant_text,
@@ -318,6 +329,7 @@ class AgentRuntime:
                     llm_calls=llm_calls,
                     elapsed_ms=summary["elapsed_ms"],
                 )
+                yield _sse_event("trace", finish_record)
             yield _sse_event(
                 "done",
                 {
@@ -329,7 +341,8 @@ class AgentRuntime:
             )
         except Exception as exc:  # pragma: no cover - defensive boundary
             elapsed_ms = _elapsed_ms(turn_started_at)
-            self.tracer.finish_turn(trace_id, status="error", elapsed_ms=elapsed_ms)
+            finish_record = self.tracer.finish_turn(trace_id, status="error", elapsed_ms=elapsed_ms)
+            yield _sse_event("trace", finish_record)
             yield _sse_event(
                 "error",
                 {
@@ -339,8 +352,17 @@ class AgentRuntime:
                 },
             )
 
-    def _build_messages(self, session_id: str, mode: str) -> list[dict[str, Any]]:
-        messages = [{"role": "system", "content": build_system_prompt(mode, self.tool_inventory(mode=mode))}]
+    def _build_messages(self, session_id: str, mode: str, system_prompt: str = "") -> list[dict[str, Any]]:
+        messages = [
+            {
+                "role": "system",
+                "content": build_system_prompt(
+                    mode,
+                    self.tool_inventory(mode=mode),
+                    custom_instructions=system_prompt,
+                ),
+            }
+        ]
         messages.extend(self.memory_store.get(session_id, limit=20))
         return messages
 
@@ -349,28 +371,31 @@ class AgentRuntime:
             return f"我先记下了：{message}"
         return f"收到：{message}"
 
-    def _run_simple(self, client: "OpenAI", session_id: str, trace_id: str) -> tuple[str, int]:
-        messages = self._build_messages(session_id, mode="simple")
+    def _run_simple_stream(self, client: "OpenAI", session_id: str, trace_id: str, *, system_prompt: str = ""):
+        messages = self._build_messages(session_id, mode="simple", system_prompt=system_prompt)
         started_at = time.perf_counter()
-        self.tracer.log_event(trace_id, "llm_call_start", {"round": 1, "mode": "simple", "tools": 0})
+        yield _trace_sse(self.tracer.log_event(trace_id, "llm_call_start", {"round": 1, "mode": "simple", "tools": 0}))
         response = client.chat.completions.create(model=_model_name(), messages=messages)
-        self.tracer.log_event(
-            trace_id,
-            "llm_call_end",
-            {"round": 1, "mode": "simple", "elapsed_ms": _elapsed_ms(started_at), "tool_calls": 0},
+        yield _trace_sse(
+            self.tracer.log_event(
+                trace_id,
+                "llm_call_end",
+                {"round": 1, "mode": "simple", "elapsed_ms": _elapsed_ms(started_at), "tool_calls": 0},
+            )
         )
         message = response.choices[0].message
         return (message.content or "").strip() or self._fallback_reply("simple", ""), 1
 
-    def _run_agent(
+    def _run_agent_stream(
         self,
         client: "OpenAI",
         session_id: str,
         trace_id: str,
         *,
         mode: str,
-    ) -> tuple[str, int, int, str]:
-        messages = self._build_messages(session_id, mode=mode)
+        system_prompt: str = "",
+    ):
+        messages = self._build_messages(session_id, mode=mode, system_prompt=system_prompt)
         tool_calls_total = 0
         llm_calls_total = 0
         context = ToolContext(
@@ -383,10 +408,12 @@ class AgentRuntime:
         for round_index in range(1, 5):
             tools = self.agent_tools(mode=mode)
             started_at = time.perf_counter()
-            self.tracer.log_event(
-                trace_id,
-                "llm_call_start",
-                {"round": round_index, "mode": mode, "tools": len(tools)},
+            yield _trace_sse(
+                self.tracer.log_event(
+                    trace_id,
+                    "llm_call_start",
+                    {"round": round_index, "mode": mode, "tools": len(tools)},
+                )
             )
             response = client.chat.completions.create(
                 model=_model_name(),
@@ -397,15 +424,17 @@ class AgentRuntime:
             llm_calls_total += 1
             message = response.choices[0].message
             tool_calls = message.tool_calls or []
-            self.tracer.log_event(
-                trace_id,
-                "llm_call_end",
-                {
-                    "round": round_index,
-                    "mode": mode,
-                    "elapsed_ms": _elapsed_ms(started_at),
-                    "tool_calls": len(tool_calls),
-                },
+            yield _trace_sse(
+                self.tracer.log_event(
+                    trace_id,
+                    "llm_call_end",
+                    {
+                        "round": round_index,
+                        "mode": mode,
+                        "elapsed_ms": _elapsed_ms(started_at),
+                        "tool_calls": len(tool_calls),
+                    },
+                )
             )
             if tool_calls:
                 assistant_message: dict[str, Any] = {
@@ -428,15 +457,17 @@ class AgentRuntime:
                     tool_calls_total += 1
                     arguments = _safe_json_loads(tool_call.function.arguments or "{}")
                     if not self._tool_allowed_in_mode(tool_call.function.name, mode):
-                        self.tracer.log_event(
-                            trace_id,
-                            "tool_blocked",
-                            {
-                                "tool": tool_call.function.name,
-                                "mode": mode,
-                                "reason": "tool is not allowed in this agent mode",
-                                "tool_call_id": tool_call.id,
-                            },
+                        yield _trace_sse(
+                            self.tracer.log_event(
+                                trace_id,
+                                "tool_blocked",
+                                {
+                                    "tool": tool_call.function.name,
+                                    "mode": mode,
+                                    "reason": "tool is not allowed in this agent mode",
+                                    "tool_call_id": tool_call.id,
+                                },
+                            )
                         )
                         return (
                             f"当前只读模式不允许调用 `{tool_call.function.name}`。我没有执行任何邮箱修改操作。",
@@ -444,26 +475,46 @@ class AgentRuntime:
                             llm_calls_total,
                             "blocked",
                         )
-                    self.tracer.log_event(
-                        trace_id,
-                        "tool_call",
-                        {
-                            "tool": tool_call.function.name,
-                            "arguments": redact_for_trace(arguments),
-                            "tool_call_id": tool_call.id,
-                        },
+                    yield _trace_sse(
+                        self.tracer.log_event(
+                            trace_id,
+                            "tool_call",
+                            {
+                                "tool": tool_call.function.name,
+                                "arguments": redact_for_trace(arguments),
+                                "tool_call_id": tool_call.id,
+                            },
+                        )
                     )
                     result = self.tool_registry.execute(tool_call.function.name, arguments, context)
                     if result.get("requires_approval"):
-                        self.tracer.log_event(
-                            trace_id,
-                            "tool_pending",
-                            {
-                                "tool": tool_call.function.name,
-                                "pending_tool_call_id": result.get("pending_tool_call_id"),
-                                "reason": result.get("reason"),
-                            },
+                        yield _trace_sse(
+                            self.tracer.log_event(
+                                trace_id,
+                                "tool_pending",
+                                {
+                                    "tool": tool_call.function.name,
+                                    "pending_tool_call_id": result.get("pending_tool_call_id"),
+                                    "reason": result.get("reason"),
+                                },
+                            )
                         )
+                        yield _trace_sse(
+                            self.tracer.log_event(
+                                trace_id,
+                                "tool_result",
+                                {
+                                    "tool": tool_call.function.name,
+                                    "result": result,
+                                    "tool_call_id": tool_call.id,
+                                },
+                            )
+                        )
+                        return _pending_approval_text(
+                            tool_call.function.name,
+                            str(result.get("pending_tool_call_id", "")),
+                        ), tool_calls_total, llm_calls_total, "pending"
+                    yield _trace_sse(
                         self.tracer.log_event(
                             trace_id,
                             "tool_result",
@@ -473,18 +524,6 @@ class AgentRuntime:
                                 "tool_call_id": tool_call.id,
                             },
                         )
-                        return _pending_approval_text(
-                            tool_call.function.name,
-                            str(result.get("pending_tool_call_id", "")),
-                        ), tool_calls_total, llm_calls_total, "pending"
-                    self.tracer.log_event(
-                        trace_id,
-                        "tool_result",
-                        {
-                            "tool": tool_call.function.name,
-                            "result": result,
-                            "tool_call_id": tool_call.id,
-                        },
                     )
                     messages.append(
                         {
@@ -511,6 +550,15 @@ def _pending_approval_text(tool_name: str, pending_tool_call_id: str) -> str:
         f"- pending_tool_call_id: `{pending_tool_call_id}`\n"
         "请确认后再批准或拒绝。"
     )
+
+
+def _trace_sse(record: dict[str, Any]) -> str:
+    return _sse_event("trace", record)
+
+
+def _latest_trace_event(tracer: TraceLogger, trace_id: str) -> dict[str, Any] | None:
+    events = tracer.read_trace(trace_id)
+    return events[-1] if events else None
 
 
 def _state_db_path(raw_path: str) -> str:

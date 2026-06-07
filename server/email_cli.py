@@ -14,6 +14,8 @@ if __package__ in {None, ""}:  # pragma: no cover - runtime path bootstrap for s
     sys.path.insert(0, str(current_file.parent.parent))
 
 try:
+    if __package__ not in {None, ""}:
+        raise ModuleNotFoundError("app", name="app")
     from app.agent import AgentRuntime
     from app.archive_shadow import (
         DEFAULT_ARCHIVE_SHADOW_MAX_AVG_LATENCY_MS,

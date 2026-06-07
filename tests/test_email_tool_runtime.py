@@ -33,6 +33,7 @@ from server.app.llm_email_classifier import _normalize_decision, _parse_json_obj
 from server.app.memory import MemoryStore
 from server.app.proposal_eval import evaluate_archive_proposal_policy
 from server.app.provider_factory import create_email_provider
+from server.app.prompts import build_system_prompt
 from server.app.qq_imap_provider import QQImapConfig, QQImapProvider
 from server.app.redaction import redact_for_trace
 from server.app.real_proposal_eval import (
@@ -96,6 +97,13 @@ class EmailToolRuntimeTests(unittest.TestCase):
         self.assertIn("email_reject_proposal", names)
         self.assertIn("email_execute_approved_proposals", names)
         self.assertIn("email_audit_log", names)
+        self.assertIn("email_clean_teach", names)
+        self.assertIn("email_clean_rules", names)
+        self.assertIn("email_clean_approve_rule", names)
+        self.assertIn("email_clean_disable_rule", names)
+        self.assertIn("email_clean_preview", names)
+        self.assertIn("email_clean_policy", names)
+        self.assertIn("email_clean_audit", names)
         self.assertIn("email_provider_status", names)
         self.assertIn("email_list_mailboxes", names)
         self.assertIn("email_eval_mock", names)
@@ -104,6 +112,17 @@ class EmailToolRuntimeTests(unittest.TestCase):
         self.assertIn("email_eval_report", names)
         self.assertNotIn("read_text_file", names)
         self.assertNotIn("run_shell_command", names)
+
+    def test_custom_console_system_prompt_is_appended_after_safety_prompt(self) -> None:
+        prompt = build_system_prompt(
+            "agent",
+            [{"name": "email_search"}],
+            custom_instructions="请优先用 markdown 表格总结结果。",
+        )
+        self.assertIn("任何会修改邮箱状态的操作都必须通过审批工具流转", prompt)
+        self.assertIn("Console 追加系统提示", prompt)
+        self.assertIn("请优先用 markdown 表格总结结果。", prompt)
+        self.assertIn("不能覆盖上述安全规则", prompt)
 
     def test_email_report_important(self) -> None:
         response = self.runtime.execute_tool_for_test("email_report_important", {"limit": 12})
@@ -218,6 +237,82 @@ class EmailToolRuntimeTests(unittest.TestCase):
         detail = self.runtime.execute_tool_for_test("email_get_detail", {"email_id": "email-001"})
         self.assertIn("inbox", detail["result"]["email"]["labels"])
         self.assertNotIn("archived", detail["result"]["email"]["labels"])
+
+    def test_agent_stream_emits_live_trace_events(self) -> None:
+        fake_client = FakeOpenAIClient(
+            [
+                FakeChatResponse(
+                    FakeChatMessage(
+                        tool_calls=[
+                            FakeToolCall(
+                                "call-recent",
+                                "email_list_recent",
+                                '{"limit":2}',
+                            )
+                        ]
+                    )
+                ),
+                FakeChatResponse(FakeChatMessage("Found recent mail.")),
+            ]
+        )
+
+        with patch("server.app.agent._openai_client", return_value=fake_client):
+            raw_events = list(self.runtime.stream_chat("trace-agent", "List recent mail"))
+
+        events = _parse_sse(raw_events)
+        trace_events = [item["data"]["event"] for item in events if item["event"] == "trace"]
+        self.assertIn("turn_start", trace_events)
+        self.assertIn("llm_call_start", trace_events)
+        self.assertIn("llm_call_end", trace_events)
+        self.assertIn("tool_call", trace_events)
+        self.assertIn("tool_result", trace_events)
+        self.assertIn("turn_end", trace_events)
+        done_index = next(index for index, item in enumerate(events) if item["event"] == "done")
+        tool_result_index = next(
+            index
+            for index, item in enumerate(events)
+            if item["event"] == "trace" and item["data"]["event"] == "tool_result"
+        )
+        self.assertLess(tool_result_index, done_index)
+
+    def test_cleaner_tools_teach_preview_and_rule_approval_boundary(self) -> None:
+        teach = self.runtime.execute_tool_for_test(
+            "email_clean_teach",
+            {"instruction": "以后 Facebook 通知都归档，但安全邮件不要动", "limit": 10},
+            session_id="clean-tools",
+        )
+        self.assertTrue(teach["ok"])
+        self.assertFalse(teach["result"]["mailbox_mutation"])
+        self.assertGreaterEqual(teach["result"]["rule_count"], 1)
+
+        rules = self.runtime.execute_tool_for_test("email_clean_rules", {}, session_id="clean-tools")
+        self.assertTrue(rules["ok"])
+        rule_id = rules["result"]["rules"][0]["rule_id"]
+
+        pending = self.runtime.execute_tool_for_test(
+            "email_clean_approve_rule",
+            {"rule_id": rule_id},
+            session_id="clean-tools",
+        )
+        self.assertFalse(pending["ok"])
+        self.assertTrue(pending["requires_approval"])
+
+        approved = self.runtime.approve_tool(pending["pending_tool_call_id"])
+        self.assertTrue(approved["ok"])
+        self.assertEqual("enabled", approved["result"]["rule"]["status"])
+
+        with TemporaryDirectory() as temp_dir, patch(
+            "server.app.cleaner.storage.DEFAULT_CLEAN_PREVIEW_DIR",
+            Path(temp_dir),
+        ):
+            preview = self.runtime.execute_tool_for_test(
+                "email_clean_preview",
+                {"limit": 10},
+                session_id="clean-tools",
+            )
+        self.assertTrue(preview["ok"])
+        self.assertFalse(preview["result"]["mailbox_mutation"])
+        self.assertIn("auto_eligible", preview["result"])
 
     def test_readonly_agent_exposes_only_read_tools(self) -> None:
         tools = self.runtime.agent_tools(mode="agent_readonly")
@@ -1036,3 +1131,18 @@ class EmailToolRuntimeTests(unittest.TestCase):
             {"model": "fake-shadow", "timeout": 45.0, "max_retries": 2},
             FakeLLMClassifier.init_kwargs,
         )
+
+
+def _parse_sse(raw_events: list[str]) -> list[dict[str, Any]]:
+    parsed = []
+    for raw in raw_events:
+        event_name = ""
+        payload: dict[str, Any] = {}
+        for line in raw.splitlines():
+            if line.startswith("event:"):
+                event_name = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                payload = json.loads(line.split(":", 1)[1].strip())
+        if event_name:
+            parsed.append({"event": event_name, "data": payload})
+    return parsed

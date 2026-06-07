@@ -6,14 +6,14 @@
 
 - 开发方式：Mac 本地、server-first。
 - 真实邮箱：个人 QQ/Foxmail IMAP。
-- 主要入口：`uv run mailguard`、`server/email_cli.py`、`server/agent_cli.py`、`server/agent_smoke.py`。
-- 当前自动化基线：110 tests OK，1 skipped。
-- 近期重点：M1.5 架构稳定化；先收敛 archive core、正式状态和 adapter 边界，再继续真实 proposal/candidate 标注与 LLM shadow readiness。
+- 主要入口：`uv run mailguard`、`server/email_cli.py`、`server/agent_cli.py`、`server/agent_smoke.py`、`console/`。
+- 当前自动化基线：`server/.venv/bin/python -m unittest discover -s tests -p 'test*.py'` 为 146 tests OK；`cd console && npm run build` 通过。
+- 近期重点：Inbox Cleaner + Agent Console；先验证多轮 chat、实时 trace、pending approval、clean rule teach/enable/preview，再谨慎推进真实邮箱自动归档、回滚/恢复和 scheduler。
 
 ## 文档职责
 
 - [项目状态](./project-state.md)：当前目标、已完成、进行中、下一步、风险和协作约定。
-- [架构决策](./decisions.md)：LLM、memory、policy、candidate/proposal 分层等关键不变量。
+- [架构决策](./decisions.md)：LLM、memory、policy、candidate/proposal、Console 和 scheduler 前置边界等关键不变量。
 - [系统架构](./architecture.md)：runtime、tools、provider、state、proposal、memory 和安全边界。
 - [测试与评估](./testing-and-evaluation.md)：常用验证命令、真实邮箱测试步骤和验收标准。
 - [测试日志](./test-logs/README.md)：关键验证快照。

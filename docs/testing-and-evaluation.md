@@ -8,13 +8,16 @@
 python3 -m unittest discover -s tests -p 'test*.py'
 python3 -m unittest tests.test_email_tools
 python3 -m py_compile server/app/*.py server/app/archive/*.py server/app/cleaner/*.py server/app/cli/*.py server/app/daily_report/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py
+cd console && npm run build
 ```
 
 当前基线：
 
 ```text
-133 tests OK (1 skipped when FastAPI is unavailable in root python)
+server/.venv/bin/python -m unittest discover -s tests -p 'test*.py': 146 tests OK
+python3 -m unittest discover -s tests -p 'test*.py': 146 tests OK (3 skipped when FastAPI is unavailable in root python)
 py_compile passed
+npm run build passed
 ```
 
 测试结构：
@@ -24,6 +27,7 @@ py_compile passed
 - `tests/test_email_cli.py`：email CLI 展示、approval preview、真实标签保存。
 - `tests/test_cleaner.py`：Inbox Cleaner dry-run、clean rule authorization、teach workflow、auto_eligible guard、clean preset。
 - `tests/test_agent_cli.py`：HTTP/SSE agent CLI、pending、approve/reject、trace、auth header。
+- `tests/test_console_api.py`：Console-facing API，覆盖 `/api` alias、chat SSE、Cleaner teach/rules/preview/policy/audit 和 protected route auth。
 - `tests/test_real_eval_helpers.py`：真实邮箱标签、proposal/candidate 标签指标、observed memory insights 和 memory proposals。
 - `tests/test_sqlite_persistence.py`：SQLite notification、preferences、scheduler、proposal/audit、clean rule 持久化。
 - `tests/test_auth_provider_tools.py`：auth、dev tools、provider factory。
@@ -36,6 +40,8 @@ py_compile passed
 - dangerous approval、approve 后 mutation、reject 后不 mutation。
 - agent pending 后停止、readonly 工具限制和异常写工具阻断。
 - HTTP approval / trace CLI：SSE、pending、approve、reject、trace、auth header。
+- Agent realtime trace：chat SSE 输出 `trace` event，覆盖 LLM/tool/pending/turn_end 等可观察链路。
+- Agent Console API：Cleaner teach/rules/preview 走 FastAPI，preview 不修改邮箱；`/api` 前缀保留 protected route token auth。
 - trace/pending 脱敏。
 - scheduler、notification、digest、SQLite 去重。
 - Action Proposal + Audit Log：低风险 archive proposal、审批/拒绝、approved execution、失败审计、SQLite 持久化。
@@ -61,6 +67,37 @@ python3 server/agent_smoke.py
 - `read_report`：读工具完成后模型给最终回答。
 - `archive_approve`：停在 pending，approve 后才修改 mock 邮件。
 - `star_reject`：停在 pending，reject 后 mock 邮件不变。
+
+## Agent Console Smoke
+
+启动后端：
+
+```bash
+cd server
+uv run uvicorn app.main:app --reload
+```
+
+启动控制台：
+
+```bash
+cd console
+npm install
+npm run dev
+```
+
+建议先在 mock provider 下测试：
+
+- 打开 `http://127.0.0.1:5173`。
+- 打开 Settings；API Base 默认保持 `/api`。Vite dev 会代理到 FastAPI；如果使用后端构建产物入口 `http://127.0.0.1:8000/console`，同一个 `/api` 也会由 FastAPI 原生处理。
+- Settings 里的 Session 用于隔离对话记忆和 cleaner rule；Token 用于连接启用 `MAILGUARD_AUTH_TOKEN` 的后端；System Prompt 是追加指令，不能覆盖后端安全规则和 tool 权限。
+- 点击 Refresh，确认 server status 和 tool count。
+- 在 agent mode 输入“列出最近 5 封邮件”，确认 trace timeline 出现 `llm_call_*`、`tool_call`、`tool_result` 和 `turn_end`。
+- 在输入框按 Enter 发送，按 Shift+Enter 换行；assistant markdown 应渲染为列表、代码块或加粗文本。
+- 输入“请归档 email-001”，确认 pending 面板出现 dangerous tool call；先点 Reject，确认 mock 邮箱未被修改。
+- 在 Cleaner 面板输入“以后 Facebook 通知都归档，但安全邮件不要动”，点击 Teach，确认生成 proposed rules。
+- Enable 一条 rule 时先确认弹窗中的 rule 内容，再确认启用；随后点击 Preview，确认 preview 展示 `auto_eligible`、`protected`、`candidates`、`no_action` bucket，且 `mailbox_mutation=false`。
+
+连接真实邮箱时，Console approve 会调用 `/tools/approve` 并执行真实 provider mutation。真实写操作测试必须单独限定 pending id、邮件 id 和 provider 配置；不要在未确认参数时点击 Approve。
 
 Live LLM mock provider，会调用真实 LLM API，但强制 mock provider：
 

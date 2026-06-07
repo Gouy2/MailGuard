@@ -165,6 +165,18 @@ Policy + Memory + User Permission: authorize
 - 当前状态：`clean-policy` 可 show/enable/disable；`clean-run --policy` 只执行 policy 允许的 `auto_eligible`，被 policy 拦截的 item 会记录在 artifact 的 `policy_skipped` 中；policy 持久化到 SQLite `email_clean_policy`。
 - 后续：scheduler integration 应调用 policy-gated cleaner workflow；接 scheduler 前还需要设计用户可见的运行记录、失败处理和回滚/恢复策略。
 
+## 2026-06-07 - Agent Console 是可观察控制台，不是邮箱客户端
+
+- 决策：新增 React Agent Console，定位为开发调试控制台和未来产品 UI 的地基；第一版覆盖 chat、实时 trace、pending approval 和 Inbox Cleaner teach/rules/preview。
+- 理由：CLI 不适合验证多轮 tool calling、HITL 审批和 agent 执行链路；在继续优化性能、scheduler 或正式产品 UI 前，需要一个可观察、可演示、可调试的工作台。
+- 约束：Console 是 adapter，不承载归档 policy、memory、approval 或 provider 逻辑；所有业务行为必须复用 FastAPI / workflow / tool registry。
+- 约束：Console 默认 API Base 是 `/api`；FastAPI 将同一组 handler 同时挂载到根路径和 `/api`，兼容 Vite dev proxy、构建产物 `/console` 静态挂载和直接 API 调试。
+- 约束：Console 可以提供 System Prompt 输入，但只能作为后端基础 prompt 的追加指令；不能替换 safety prompt、readonly 限制或 tool registry 权限。
+- 约束：产品 trace 展示 observable chain，例如 LLM call、tool call、tool result、pending、approval、error；不展示模型原始 chain-of-thought。
+- 约束：Console 支持 approve/reject pending tool call；连接真实邮箱时，approve 会执行真实 provider mutation，真实写测试仍必须单独通知并限定范围。
+- 约束：Console 启用 clean rule 前必须展示确认层；archive rule 会影响未来 cleaner 自动归档授权，不能和普通只读 preview 操作混在一起。
+- 当前状态：FastAPI chat SSE 会流式输出 `trace` event；Cleaner workflow 暴露 HTTP API 和 `email_clean_*` agent tools；`email_clean_approve_rule` 被视为 dangerous tool。
+
 ## 2026-05-26 - 文档瘦身
 
 - 决策：主文档收敛为 `project-state.md`、`decisions.md`、`architecture.md`、`testing-and-evaluation.md`、`test-logs/README.md`。

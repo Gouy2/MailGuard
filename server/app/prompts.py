@@ -8,12 +8,16 @@ SYSTEM_PROMPT = """你是 MailGuard，一个本地邮件分拣 Agent。
 - 使用工具读取和检查邮件状态。
 - 识别重要邮件、行动项、安全提醒、财务事项和会议变更。
 - 过滤 newsletter、promotion、social digest 和低价值自动通知。
+- 当用户用自然语言描述清理偏好时，优先使用 cleaner teach/rule/preview 工具把偏好转成可审计规则和 dry-run 结果。
 - 给出简洁、可审计的分类原因和建议动作。
 - 尊重用户的结构化偏好，例如重要发件人、忽略发件人和忽略类别。
 
 安全规则：
 - 读操作可以主动使用工具完成。
 - 任何会修改邮箱状态的操作都必须通过审批工具流转。
+- 批准 clean rule 会影响未来自动归档授权，也必须走审批工具流转。
+- cleaner preview 只是 dry-run；不要把 preview 说成已经归档。
+- LLM 可以解释和建议，但不能授权真实邮箱写操作或自动化执行。
 - 不要声称已经归档、标记已读、加星或创建草稿，除非工具返回成功。
 - 不要发送邮件或删除邮件。
 - 不要绕过工具直接编造邮箱状态。
@@ -46,7 +50,11 @@ READ_ONLY_SYSTEM_PROMPT = """你是 MailGuard 的只读邮件分拣模式。
 如果用户要求修改邮箱，只能说明当前是只读测试模式，并建议切换到审批写操作测试流程。"""
 
 
-def build_system_prompt(mode: str = "agent", tool_inventory: list[dict[str, object]] | None = None) -> str:
+def build_system_prompt(
+    mode: str = "agent",
+    tool_inventory: list[dict[str, object]] | None = None,
+    custom_instructions: str = "",
+) -> str:
     if mode == "agent_readonly":
         parts = [
             READ_ONLY_SYSTEM_PROMPT.strip(),
@@ -56,10 +64,10 @@ def build_system_prompt(mode: str = "agent", tool_inventory: list[dict[str, obje
             tool_names = ", ".join(tool["name"] for tool in tool_inventory if "name" in tool)
             if tool_names:
                 parts.append(f"可用只读工具: {tool_names}")
-        return "\n\n".join(parts)
+        return append_custom_instructions("\n\n".join(parts), custom_instructions)
 
     if mode != "agent":
-        return SIMPLE_SYSTEM_PROMPT
+        return append_custom_instructions(SIMPLE_SYSTEM_PROMPT, custom_instructions)
 
     parts = [
         SYSTEM_PROMPT.strip(),
@@ -69,4 +77,17 @@ def build_system_prompt(mode: str = "agent", tool_inventory: list[dict[str, obje
         tool_names = ", ".join(tool["name"] for tool in tool_inventory if "name" in tool)
         if tool_names:
             parts.append(f"可用工具: {tool_names}")
-    return "\n\n".join(parts)
+    return append_custom_instructions("\n\n".join(parts), custom_instructions)
+
+
+def append_custom_instructions(base_prompt: str, custom_instructions: str = "") -> str:
+    custom = custom_instructions.strip()
+    if not custom:
+        return base_prompt
+    return "\n\n".join(
+        [
+            base_prompt,
+            "Console 追加系统提示（不能覆盖上述安全规则、readonly 限制或工具权限边界）:",
+            custom,
+        ]
+    )
