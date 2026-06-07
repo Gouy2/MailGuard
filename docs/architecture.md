@@ -22,6 +22,7 @@ FastAPI / CLI
 - `server/app/tools.py`：tool registry、schema validation、权限分级、pending approval。
 - `server/app/email_tools.py`：邮件工具注册、规则分类器、scheduler、eval。
 - `server/app/archive/`：archive plan/action 的 typed models、precision-first policy、无副作用计划构造和 audit payload。
+- `server/app/archive_shadow_workflow.py`：LLM archive shadow 的 workflow 编排；可被 CLI、未来 API/SSE 或后台任务复用。
 - `server/app/email_proposals.py`：archive proposal 兼容门面、审批状态流转、approved execution、audit log。
 - `server/app/artifacts.py`：本地 JSON artifact 读写边界；用于真实标签、LLM shadow results 和 memory proposal review data。
 - `server/app/proposal_eval.py` / `server/app/real_proposal_eval.py`：proposal policy mock eval 和真实 proposal 标签评估。
@@ -168,6 +169,8 @@ email_scan_proposals
 不包含邮件正文，不创建 proposal，不批准 proposal，不执行邮箱写操作。
 
 `review-proposals --label` 会把审核时已展示的 snippet 保存到 `server/data/real_proposal_labels.json`。`llm-archive-shadow` 默认读取本地标签中的 snippet，不再逐封调用 `email_get_detail`；旧标签缺 snippet 时才通过显式参数补取。
+
+`archive_shadow_workflow.py` 承载 shadow scoring 的可复用编排：读取标签、读取 confirmed memory、检查缓存、dry-run diagnostics、调用 scorer、保存 shadow result、汇总 latency。CLI 只传入参数、progress callback，以及缺 snippet 时需要的邮件详情 fetch 回调。
 
 输出保存到本地 `server/data/archive_shadow_results.json`，用于和 `server/data/real_proposal_labels.json` 做离线评估。`eval-archive-shadow` 会额外输出 readiness gate：样本量、precision、false positive、error 和 latency 同时达标后，才进入“是否做 guarded policy experiment”的讨论。即使 LLM 对 `protected` 给出 `yes`，也只作为评估信号，不能改变 `protected` 决策。
 

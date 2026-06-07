@@ -27,6 +27,7 @@ from server.app.archive_shadow import (
     normalize_archive_shadow_judgment,
     save_archive_shadow_result,
 )
+from server.app.archive_shadow_workflow import run_archive_shadow_workflow
 from server.app.auth import configured_auth_token, require_api_token
 from server.app.email_eval import evaluate_email_classifier
 from server.app.email_provider import MockEmailProvider
@@ -76,6 +77,44 @@ class RealEmailEvalTests(unittest.TestCase):
             loaded = load_json_artifact(artifact_path, default=default)
 
         self.assertEqual({"imap-1": {"label": "important"}}, loaded["labels"])
+
+    def test_archive_shadow_workflow_dry_run_is_reusable_without_cli_runtime(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            labels_path = Path(temp_dir) / "real_proposal_labels.json"
+            shadow_path = Path(temp_dir) / "archive_shadow_results.json"
+            memory_path = Path(temp_dir) / "memory_proposals.json"
+            save_real_proposal_label(
+                labels_path,
+                proposal={
+                    "candidate_id": "candidate-email-001-archive",
+                    "item_type": "candidate",
+                    "email_id": "email-001",
+                    "action": "archive",
+                    "risk_level": "candidate",
+                    "source": "policy_candidate",
+                    "category": "newsletter",
+                    "importance": "low",
+                    "suggested_action": "ignore",
+                    "policy_decision": "candidate",
+                    "subject": "Weekly updates",
+                    "snippet": "A short newsletter.",
+                    "from_email": "updates@example.com",
+                    "reason": "low-value candidate",
+                },
+                label="archive",
+            )
+
+            result = run_archive_shadow_workflow(
+                labels_path=labels_path,
+                shadow_path=shadow_path,
+                memory_path=memory_path,
+                dry_run=True,
+            )
+
+        self.assertEqual(1, result["selected_count"])
+        self.assertEqual(1, result["dry_run_count"])
+        self.assertEqual(0, result["scored_count"])
+        self.assertFalse(shadow_path.exists())
 
     def test_real_label_evaluation_tracks_mismatches(self) -> None:
         label_data = {

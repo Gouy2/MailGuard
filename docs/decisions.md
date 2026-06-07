@@ -107,6 +107,13 @@ Policy + Memory + User Permission: authorize
 - 约束：本轮只抽 IO 边界，不改变文件 schema、不迁移现有数据、不改变 CLI 命令和评估指标。
 - 后续：如果 memory proposal 进入正式产品状态，应迁入明确的 runtime store，而不是继续依赖 eval artifact 文件。
 
+## 2026-05-29 - CLI 下沉为 workflow adapter
+
+- 决策：把 `llm-archive-shadow` 的流程编排从 `email_cli.py` 下沉到 `server/app/archive_shadow_workflow.py`。
+- 理由：shadow scoring 未来可能由 CLI、API/SSE 或后台任务触发；如果流程留在 CLI 中，后续会重复实现缓存、dry-run、latency 和错误处理逻辑。
+- 约束：CLI 命令、输出结构、文件 schema、progress 文案和真实邮箱行为保持兼容；workflow 通过 callback 获取缺失 snippet 的邮件详情，不直接依赖 CLI runtime。
+- 后续：继续评估 `observed-memory` / `memory-proposals` 是否需要下沉为 workflow，避免 CLI 重新膨胀。
+
 ## 2026-05-26 - 文档瘦身
 
 - 决策：主文档收敛为 `project-state.md`、`decisions.md`、`architecture.md`、`testing-and-evaluation.md`、`test-logs/README.md`。

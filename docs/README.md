@@ -7,7 +7,7 @@
 - 开发方式：Mac 本地、server-first。
 - 真实邮箱：个人 QQ/Foxmail IMAP。
 - 主要入口：`uv run mailguard`、`server/email_cli.py`、`server/agent_cli.py`、`server/agent_smoke.py`。
-- 当前自动化基线：108 tests OK，1 skipped。
+- 当前自动化基线：109 tests OK，1 skipped。
 - 近期重点：M1.5 架构稳定化；先收敛 archive core、正式状态和 adapter 边界，再继续真实 proposal/candidate 标注与 LLM shadow readiness。
 
 ## 文档职责

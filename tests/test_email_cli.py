@@ -729,7 +729,7 @@ class EmailCliTests(unittest.TestCase):
             )
             runtime = FakeCliRuntime([])
             stdout = StringIO()
-            with patch("server.email_cli.ArchiveSuitabilityScorer", FakeArchiveScorer):
+            with patch("server.app.archive_shadow_workflow.ArchiveSuitabilityScorer", FakeArchiveScorer):
                 exit_code = run_cli(
                     [
                         "llm-archive-shadow",
@@ -832,7 +832,7 @@ class EmailCliTests(unittest.TestCase):
             stdout = StringIO()
             stderr = StringIO()
             with patch.dict(os.environ, {"OPENAI_MODEL": ""}), patch(
-                "server.email_cli.ArchiveSuitabilityScorer",
+                "server.app.archive_shadow_workflow.ArchiveSuitabilityScorer",
                 FailingArchiveScorer,
             ):
                 exit_code = run_cli(
@@ -880,7 +880,7 @@ class EmailCliTests(unittest.TestCase):
             runtime = FakeCliRuntime([])
             stdout = StringIO()
             stderr = StringIO()
-            with patch("server.email_cli.ArchiveSuitabilityScorer", FailingArchiveScorer):
+            with patch("server.app.archive_shadow_workflow.ArchiveSuitabilityScorer", FailingArchiveScorer):
                 exit_code = run_cli(
                     [
                         "llm-archive-shadow",
@@ -945,7 +945,7 @@ class EmailCliTests(unittest.TestCase):
                 ]
             )
             stdout = StringIO()
-            with patch("server.email_cli.ArchiveSuitabilityScorer", FailingArchiveScorer):
+            with patch("server.app.archive_shadow_workflow.ArchiveSuitabilityScorer", FailingArchiveScorer):
                 exit_code = run_cli(
                     [
                         "llm-archive-shadow",

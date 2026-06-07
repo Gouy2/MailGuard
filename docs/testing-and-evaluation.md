@@ -13,7 +13,7 @@ python3 -m py_compile server/app/*.py server/app/archive/*.py server/evaluate_em
 当前基线：
 
 ```text
-108 tests OK (1 skipped when FastAPI is unavailable in root python)
+109 tests OK (1 skipped when FastAPI is unavailable in root python)
 py_compile passed
 ```
 
