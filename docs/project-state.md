@@ -4,15 +4,15 @@
 
 ## 当前目标
 
-MailGuard 是一个本地优先的邮件管理 Agent。当前目标不是做完整邮箱客户端或旧桌宠，而是做一个安全、可审计、可逐步自动化的邮件处理内核。
+MailGuard 是一个本地优先的邮箱清理 Agent。当前目标不是做完整邮箱客户端或旧桌宠，而是做一个安全、可审计、可逐步自动归档无用邮件的处理内核。
 
 核心工作流：
 
 ```text
 scan/search
 -> classify/filter
--> protected / candidate / proposal
--> approval or explicit automation policy
+-> protected / candidate / auto_eligible dry-run / proposal
+-> user-confirmed automation policy or approval
 -> execute
 -> audit log
 ```
@@ -32,11 +32,12 @@ scan/search
 - LLM archive suitability shadow：默认不发送正文，只读评分 candidate/proposal 是否适合归档，并保存本地 shadow 结果用于和真实标签评估。
 - M1.5 结构治理：deterministic classifier 已从 tool 注册文件拆到 `email_classifier.py`；CLI human renderer 和 interactive labeling 已拆到 `app/cli/`；observed/confirmed memory 编排已拆到 `memory_workflow.py`。
 - M2 Daily Report Agent：新增手动触发的只读 `daily_report` 域，支持 bounded typed action loop、mock planner、OpenAI planner、只读工具 adapter 和持久化 report artifact。
+- M2.1 Inbox Cleaner dry-run：新增 `cleaner` workflow，`mailguard clean` 会生成只读 clean preview artifact；只有 approved sender/domain memory 命中且未被 protected guard 拦截的邮件会进入 `auto_eligible`。
 - Mock classifier eval、proposal policy eval、real email label/eval、real proposal label/eval、LLM shadow eval。
 
 ## 进行中
 
-当前进入 M2 Daily Report Agent 阶段：先验证手动触发、只读、可追溯的 daily report loop，再讨论 scheduler 和写操作自动化。
+当前主线已 pivot 到 Inbox Cleaner：先验证只读 `auto_eligible` dry-run 的误伤风险和解释质量，再讨论用户确认后的自动归档执行。Daily Report 保留为只读实验/审计能力，不再作为核心产品路线扩展。
 
 - `server/app/archive/models.py` 定义 archive plan 的 typed boundary，并提供旧 dict 输出兼容层。
 - `server/app/archive/policy.py` 承载 precision-first archive policy。
@@ -47,6 +48,7 @@ scan/search
 - `server/app/memory_workflow.py` 承载 observed memory、memory proposal refresh/list 和 confirmed memory listing 的可复用 workflow。
 - `server/app/email_classifier.py` 承载 deterministic classifier；`email_tools.py` 继续兼容导出 `classify_email`，但不再承载规则细节。
 - `server/app/cli/render.py` 和 `server/app/cli/label.py` 承载 CLI 展示与交互标注；`server/email_cli.py` 保留为 parser、command dispatch 和 runtime adapter。
+- `server/app/cleaner/` 承载 Inbox Cleaner dry-run preview、artifact storage 和 auto-eligible 边界；CLI 只负责触发和展示。
 - `server/app/daily_report/` 承载 daily report 的 models、planner、runner、storage 和只读 tools；CLI 只负责触发和展示。
 - `server/app/email_proposals.py` 暂时保留为兼容门面和 proposal 状态流转层。
 - `uv run mailguard ...` workflow presets 降低真实测试命令负担；底层长命令保持兼容。
@@ -54,10 +56,10 @@ scan/search
 
 ## 下一步
 
-1. 对 `daily-report --llm mock` 和 `mailguard daily --llm mock` 做本地 smoke，确认 artifact 和 CLI 输出稳定。
-2. 在用户准备真实环境测试前，提前给出只读 OpenAI + 真实邮箱 smoke 步骤；不执行真实邮箱写操作。
-3. 根据真实 report 质量，决定是否要加入 report quality eval；暂不做自动反馈闭环。
-4. daily report 稳定后，再讨论 scheduler integration；scheduler 只调用 runner，不承载 agent 逻辑。
+1. 对 `clean-preview` 和 `mailguard clean` 做 mock/local smoke，确认 artifact 和 CLI 输出稳定。
+2. 在用户准备真实环境测试前，提前给出只读 clean preview smoke 步骤；不执行真实邮箱写操作。
+3. 基于真实 clean preview 结果评估 `auto_eligible` 是否足够保守，再讨论 automation policy 和 audited execution。
+4. Daily Report 暂不继续扩展为主线；后续只在需要清理摘要或审计摘要时复用。
 5. 暂不拆 `AgentRuntime`、`ToolRegistry`、`QQImapProvider` 和 `archive_shadow.py`；它们偏长但职责仍相对凝聚，先避免为行数拆分。
 
 ## 协作约定
@@ -72,15 +74,17 @@ scan/search
 - 规则 classifier 有 mock 过拟合风险，真实质量必须靠人工标签评估。
 - confirmed memory 目前只启用 sender/domain 的保守 promotion；category 级 memory 仍不参与 policy，避免规则变得过宽。
 - LLM shadow 当前只提供评估信号；如果真实 false positive 偏高，不能进入 proposal policy。
-- Daily Report Agent 当前只读；OpenAI planner 只能选择 `list_recent`、`search`、`get_detail`、`memory`、`finish`，不能生成 proposal 或执行邮箱写操作。
+- Cleaner dry-run 当前只读；`auto_eligible` 只信 confirmed sender/domain memory，不信 category memory、LLM shadow 或单纯严格规则。
+- Daily Report Agent 当前只读且已降级为实验/审计能力；OpenAI planner 不能生成 proposal 或执行邮箱写操作。
 - `email_tools.py` 和 `email_cli.py` 已明显瘦身，但仍是关键 adapter；后续新增功能必须优先落到 workflow/core，再由 CLI 或 API 调用，避免重新堆回入口文件。
 - 真实邮箱写操作虽然有审批边界，但自动化 policy 尚未实现，不能提前承诺“自动保持邮箱干净”。
 
 ## 验证基线
 
-- `python3 -m py_compile server/app/*.py server/app/archive/*.py server/app/cli/*.py server/app/daily_report/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py`：通过。
+- `python3 -m py_compile server/app/*.py server/app/archive/*.py server/app/cleaner/*.py server/app/cli/*.py server/app/daily_report/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py`：通过。
 - `python3 -m unittest tests.test_email_tools`：110 tests OK，1 skipped。
-- `python3 -m unittest discover -s tests -p 'test*.py'`：117 tests OK，1 skipped。
+- `python3 -m unittest discover -s tests -p 'test*.py'`：121 tests OK，1 skipped。
 - `python3 -m unittest tests.test_daily_report`：7 tests OK。
+- `python3 -m unittest tests.test_cleaner`：4 tests OK。
 - `python3 server/email_cli.py eval-proposals --limit 36`：mock proposal policy precision 1.0，recall 0.5385，false positive 0。
 - `python3 server/email_cli.py review-proposals --limit 12 --all`：mock scan 输出 3 proposals、2 candidates、7 protected、0 no action。

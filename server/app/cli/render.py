@@ -185,6 +185,38 @@ def _print_daily_report(result: dict[str, Any], out: TextIO) -> None:
         print(result.get("report", ""), file=out)
 
 
+def _print_clean_preview(result: dict[str, Any], out: TextIO, *, show_protected: bool = False) -> None:
+    provider = result.get("provider", {})
+    print(f"Run: {result.get('run_id', '')} [{result.get('status', '')}]", file=out)
+    print(f"Mode: {result.get('execution_mode', '')}", file=out)
+    print(f"Provider: {provider.get('provider', '')}", file=out)
+    mailbox = provider.get("mailbox_display") or provider.get("mailbox") or provider.get("selected_mailbox")
+    if mailbox:
+        print(f"Mailbox: {mailbox}", file=out)
+    print(f"Artifact: {result.get('artifact_path', '')}", file=out)
+    print(
+        f"Fetched: {result.get('fetched', 0)}, auto-eligible: {result.get('auto_eligible_count', 0)}, "
+        f"protected: {result.get('protected_count', 0)}, candidates: {result.get('candidate_count', 0)}, "
+        f"no action: {result.get('no_action_count', 0)}",
+        file=out,
+    )
+    print(
+        f"Mailbox mutation: {bool(result.get('mailbox_mutation', False))}, "
+        f"proposal mutation: {bool(result.get('proposal_mutation', False))}, "
+        f"LLM authorization: {bool(result.get('llm_authorization', False))}",
+        file=out,
+    )
+    if result.get("auto_eligible"):
+        print("Auto-eligible:", file=out)
+        _print_proposal_items(result.get("auto_eligible", [])[:10], out)
+    if result.get("candidates"):
+        print("Candidates:", file=out)
+        _print_proposal_items(result.get("candidates", [])[:10], out)
+    if show_protected and result.get("protected"):
+        print("Protected:", file=out)
+        _print_protected_items(result.get("protected", [])[:10], out)
+
+
 def _print_review(result: dict[str, Any], out: TextIO) -> None:
     print(f"Provider: {result.get('provider', '')}", file=out)
     print(f"Fetched: {result.get('fetched', 0)}", file=out)
@@ -748,6 +780,10 @@ def _render_detail(args: argparse.Namespace, result: dict[str, Any], out: TextIO
     _print_detail(result["result"], out, show_body=args.body)
 
 
+def _render_clean_preview(args: argparse.Namespace, result: dict[str, Any], out: TextIO) -> None:
+    _print_clean_preview(result["result"], out, show_protected=args.show_protected)
+
+
 def _render_review(args: argparse.Namespace, result: dict[str, Any], out: TextIO) -> None:
     payload = result["result"]
     _print_review(payload, out)
@@ -786,6 +822,7 @@ COMMAND_RENDERERS: dict[str, Callable[[argparse.Namespace, dict[str, Any], TextI
     "search": _result_renderer(_print_email_list),
     "detail": _render_detail,
     "report": _result_renderer(_print_report),
+    "clean-preview": _render_clean_preview,
     "daily-report": _result_renderer(_print_daily_report),
     "review": _render_review,
     "label": _result_renderer(_print_label),

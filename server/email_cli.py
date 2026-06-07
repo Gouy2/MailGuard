@@ -28,6 +28,8 @@ try:
         run_archive_shadow_workflow,
     )
     from app.cli.render import is_success, print_human
+    from app.cleaner.preview import run_clean_preview
+    from app.cleaner.storage import DEFAULT_CLEAN_PREVIEW_DIR
     from app.daily_report.runner import run_daily_report
     from app.daily_report.storage import DEFAULT_DAILY_REPORT_DIR
     from app.memory_proposals import (
@@ -63,6 +65,8 @@ except ModuleNotFoundError as exc:  # pragma: no cover - used when imported from
         run_archive_shadow_workflow,
     )
     from server.app.cli.render import is_success, print_human
+    from server.app.cleaner.preview import run_clean_preview
+    from server.app.cleaner.storage import DEFAULT_CLEAN_PREVIEW_DIR
     from server.app.daily_report.runner import run_daily_report
     from server.app.daily_report.storage import DEFAULT_DAILY_REPORT_DIR
     from server.app.memory_proposals import (
@@ -91,6 +95,7 @@ DEFAULT_ARCHIVE_SHADOW_PATH = SERVER_ROOT / "data" / "archive_shadow_results.jso
 RuntimeFactory = Callable[[], Any]
 InputFunc = Callable[[str], str]
 CLI_PRESETS: dict[str, tuple[str, ...]] = {
+    "clean": ("clean-preview",),
     "daily": ("daily-report",),
     "archive-review": ("review-proposals", "--limit", "20", "--unread", "--label"),
     "protected": ("review-proposals", "--limit", "20", "--unread", "--show-protected"),
@@ -152,6 +157,17 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--limit", type=int, default=20)
     report.add_argument("--unread", action="store_true", help="Only classify unread emails.")
     report.set_defaults(func=_cmd_report, display_command="report")
+
+    clean_preview = subparsers.add_parser(
+        "clean-preview",
+        help="Dry-run future automatic inbox cleaning without mutating the mailbox.",
+    )
+    clean_preview.add_argument("--limit", type=int, default=50)
+    clean_preview.add_argument("--hours", type=int, default=168)
+    clean_preview.add_argument("--out-dir", default=str(DEFAULT_CLEAN_PREVIEW_DIR))
+    clean_preview.add_argument("--memory-path", default=str(DEFAULT_MEMORY_PROPOSAL_PATH))
+    clean_preview.add_argument("--show-protected", action="store_true", help="Print protected items for policy review.")
+    clean_preview.set_defaults(func=_cmd_clean_preview, display_command="clean-preview")
 
     daily_report = subparsers.add_parser(
         "daily-report",
@@ -497,6 +513,7 @@ def _command_index(args: list[str]) -> int | None:
 def _preset_help() -> str:
     lines = [
         "Workflow presets:",
+        "  clean            -> clean-preview",
         "  daily            -> daily-report",
         "  archive-review   -> review-proposals --limit 20 --unread --label",
         "  protected        -> review-proposals --limit 20 --unread --show-protected",
@@ -554,6 +571,26 @@ def _cmd_report(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
         {"limit": args.limit, "unread_only": args.unread},
         session_id=args.session_id,
     )
+
+
+def _cmd_clean_preview(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    memory_store = getattr(runtime, "memory_store", None)
+    preferences = memory_store.email_preferences(args.session_id) if memory_store is not None else {}
+    preview = run_clean_preview(
+        memory_store=memory_store,
+        session_id=args.session_id,
+        preferences=preferences,
+        memory_path=args.memory_path,
+        output_dir=args.out_dir,
+        limit=args.limit,
+        hours=args.hours,
+    )
+    return {
+        "ok": preview.get("status") == "ok",
+        "tool": "email_clean_preview",
+        "error": preview.get("error", ""),
+        "result": preview,
+    }
 
 
 def _cmd_daily_report(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:

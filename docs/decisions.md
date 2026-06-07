@@ -130,6 +130,15 @@ Policy + Memory + User Permission: authorize
 - 约束：report run 是本地 artifact，保存 action/observation/error/latency，不保存模型完整私有推理；正文只允许在 detail observation 中截断保存。
 - 后续：手动 mock/openai 路径稳定并完成只读 smoke 后，再评估 scheduler integration；scheduler 只调用 `daily_report.runner`。
 
+## 2026-06-07 - 主线 pivot 到 Inbox Cleaner
+
+- 决策：产品主线从“每日重要邮件报告”转为“安全自动清理无用邮件”；Daily Report 保留为实验/审计能力。
+- 理由：真实用户对重要邮件有时效要求，日报无法承担及时提醒；当前更明确的用户价值是保持 inbox 干净，静默处理广告、newsletter 和低价值通知。
+- 决策：第一版只做 `clean-preview` dry-run，不执行真实归档，不创建 proposal，不写 audit。
+- 约束：`auto_eligible` 只由 approved `archive_sender` / `archive_domain` confirmed memory 授权；`protected` guard 永远优先。
+- 约束：category memory、LLM shadow、strict proposal policy 都不能直接授权 `auto_eligible`；LLM 可以继续作为 shadow 或解释信号，但不能授权自动化。
+- 后续：只有真实 clean preview 的误伤风险可接受后，才设计 `automation_policy`、audited execution、scheduler integration 和用户关闭/撤销策略。
+
 ## 2026-05-26 - 文档瘦身
 
 - 决策：主文档收敛为 `project-state.md`、`decisions.md`、`architecture.md`、`testing-and-evaluation.md`、`test-logs/README.md`。

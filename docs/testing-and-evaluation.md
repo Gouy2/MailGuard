@@ -7,13 +7,13 @@
 ```bash
 python3 -m unittest discover -s tests -p 'test*.py'
 python3 -m unittest tests.test_email_tools
-python3 -m py_compile server/app/*.py server/app/archive/*.py server/app/cli/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py
+python3 -m py_compile server/app/*.py server/app/archive/*.py server/app/cleaner/*.py server/app/cli/*.py server/app/daily_report/*.py server/evaluate_email.py server/email_cli.py server/agent_cli.py server/agent_smoke.py tests/*.py
 ```
 
 当前基线：
 
 ```text
-110 tests OK (1 skipped when FastAPI is unavailable in root python)
+121 tests OK (1 skipped when FastAPI is unavailable in root python)
 py_compile passed
 ```
 
@@ -22,6 +22,7 @@ py_compile passed
 - `tests/test_email_classification.py`：规则分类、LLM 输出解析、trace/redaction。
 - `tests/test_email_tool_runtime.py`：tool registry、approval、readonly、scheduler、proposal、eval。
 - `tests/test_email_cli.py`：email CLI 展示、approval preview、真实标签保存。
+- `tests/test_cleaner.py`：Inbox Cleaner dry-run、auto_eligible guard、clean preset。
 - `tests/test_agent_cli.py`：HTTP/SSE agent CLI、pending、approve/reject、trace、auth header。
 - `tests/test_real_eval_helpers.py`：真实邮箱标签、proposal/candidate 标签指标、observed memory insights 和 memory proposals。
 - `tests/test_sqlite_persistence.py`：SQLite notification、preferences、scheduler、proposal/audit 持久化。
@@ -39,6 +40,7 @@ py_compile passed
 - scheduler、notification、digest、SQLite 去重。
 - Action Proposal + Audit Log：低风险 archive proposal、审批/拒绝、approved execution、失败审计、SQLite 持久化。
 - Confirmed memory policy hook：已确认 sender/domain 只能把低价值 candidate 提升为 proposal，不能覆盖 protected。
+- Inbox Cleaner dry-run：只有 confirmed sender/domain memory 且未被 protected guard 拦截时才能进入 auto_eligible；不创建 proposal、不写 audit、不调用 archive。
 - LLM archive shadow：输入不含 body、保存本地 shadow 结果、对真实 proposal/candidate 标签计算 precision/recall。
 - QQ/Foxmail IMAP status、mailboxes、MIME/HTML、search、mark read、archive、star、draft。
 - email CLI：status/recent/detail/report/review/label/eval-real 和 approval-gated 写操作。
