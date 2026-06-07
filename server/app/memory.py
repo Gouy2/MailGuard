@@ -10,6 +10,8 @@ from typing import Any, Protocol
 import uuid
 
 from .archive import new_action_audit_event, normalize_action_proposal
+from .cleaner.audit import new_clean_audit_event
+from .cleaner.rules import disable_rule, enable_rule
 
 
 class StateStore(Protocol):
@@ -27,6 +29,10 @@ class StateStore(Protocol):
     def create_action_proposal_once(self, session_id: str, proposal: dict[str, Any]) -> dict[str, Any]: ...
     def load_action_audit_events(self, session_id: str) -> list[dict[str, Any]]: ...
     def save_action_audit_event(self, session_id: str, event: dict[str, Any]) -> None: ...
+    def load_clean_rules(self, session_id: str) -> list[dict[str, Any]]: ...
+    def save_clean_rule(self, session_id: str, rule: dict[str, Any]) -> None: ...
+    def load_clean_audit_events(self, session_id: str) -> list[dict[str, Any]]: ...
+    def save_clean_audit_event(self, session_id: str, event: dict[str, Any]) -> None: ...
 
 
 @dataclass(slots=True)
@@ -44,6 +50,8 @@ class MemoryStore:
         self._email_scheduler: dict[str, dict[str, Any]] = defaultdict(_default_email_scheduler_state)
         self._action_proposals: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._action_audit_events: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self._clean_rules: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self._clean_audit_events: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._state_store = state_store
         self._lock = RLock()
 
@@ -67,6 +75,8 @@ class MemoryStore:
                 self._email_scheduler.clear()
                 self._action_proposals.clear()
                 self._action_audit_events.clear()
+                self._clean_rules.clear()
+                self._clean_audit_events.clear()
                 if self._state_store:
                     self._state_store.clear()
                 return
@@ -76,6 +86,8 @@ class MemoryStore:
             self._email_scheduler.pop(session_id, None)
             self._action_proposals.pop(session_id, None)
             self._action_audit_events.pop(session_id, None)
+            self._clean_rules.pop(session_id, None)
+            self._clean_audit_events.pop(session_id, None)
             if self._state_store:
                 self._state_store.clear(session_id)
 
@@ -340,6 +352,101 @@ class MemoryStore:
             selected = list(events[-limit:]) if limit > 0 else list(events)
             return [dict(item) for item in selected]
 
+    def clean_rules(self, session_id: str, status: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            self._ensure_clean_rules_loaded(session_id)
+            rules = self._clean_rules[session_id]
+            if status:
+                rules = [item for item in rules if item.get("status") == status]
+            selected = list(rules[-limit:]) if limit > 0 else list(rules)
+            return [dict(item) for item in selected]
+
+    def create_clean_rule_once(self, session_id: str, rule: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            self._ensure_clean_rules_loaded(session_id)
+            rule_id = str(rule["rule_id"])
+            existing = self._find_clean_rule_locked(session_id, rule_id)
+            if existing is not None:
+                return {"created": False, "rule": dict(existing)}
+            item = dict(rule)
+            if self._state_store:
+                self._state_store.save_clean_rule(session_id, item)
+            self._clean_rules[session_id].append(item)
+            return {"created": True, "rule": dict(item)}
+
+    def save_clean_rule(self, session_id: str, rule: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            self._ensure_clean_rules_loaded(session_id)
+            rule_id = str(rule["rule_id"])
+            existing = self._find_clean_rule_locked(session_id, rule_id)
+            item = dict(rule)
+            if existing is None:
+                self._clean_rules[session_id].append(item)
+            else:
+                existing.clear()
+                existing.update(item)
+            if self._state_store:
+                self._state_store.save_clean_rule(session_id, item)
+            return dict(item)
+
+    def get_clean_rule(self, session_id: str, rule_id: str) -> dict[str, Any]:
+        with self._lock:
+            self._ensure_clean_rules_loaded(session_id)
+            rule = self._find_clean_rule_locked(session_id, rule_id)
+            if rule is None:
+                raise KeyError(f"clean rule not found: {rule_id}")
+            return dict(rule)
+
+    def approve_clean_rule(self, session_id: str, rule_id: str) -> dict[str, Any]:
+        rule = self.get_clean_rule(session_id, rule_id)
+        return self.save_clean_rule(session_id, enable_rule(rule))
+
+    def disable_clean_rule(self, session_id: str, rule_id: str) -> dict[str, Any]:
+        rule = self.get_clean_rule(session_id, rule_id)
+        return self.save_clean_rule(session_id, disable_rule(rule))
+
+    def add_clean_audit_event(
+        self,
+        session_id: str,
+        *,
+        run_id: str,
+        email_id: str,
+        event_type: str,
+        actor: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            self._ensure_clean_audit_loaded(session_id)
+            event = new_clean_audit_event(
+                run_id=run_id,
+                email_id=email_id,
+                event_type=event_type,
+                actor=actor,
+                payload=payload or {},
+            )
+            self._clean_audit_events[session_id].append(event)
+            if self._state_store:
+                self._state_store.save_clean_audit_event(session_id, event)
+            return dict(event)
+
+    def clean_audit_events(
+        self,
+        session_id: str,
+        *,
+        run_id: str = "",
+        email_id: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            self._ensure_clean_audit_loaded(session_id)
+            events = self._clean_audit_events[session_id]
+            if run_id:
+                events = [item for item in events if item.get("run_id") == run_id]
+            if email_id:
+                events = [item for item in events if item.get("email_id") == email_id]
+            selected = list(events[-limit:]) if limit > 0 else list(events)
+            return [dict(item) for item in selected]
+
     def _ensure_email_preferences_loaded(self, session_id: str) -> None:
         if session_id in self._email_preferences:
             return
@@ -389,6 +496,26 @@ class MemoryStore:
         self._action_proposals[session_id] = [dict(item) for item in proposals]
         self._action_audit_events[session_id] = [dict(item) for item in audit_events]
 
+    def _ensure_clean_rules_loaded(self, session_id: str) -> None:
+        if session_id in self._clean_rules:
+            return
+        rules: list[dict[str, Any]] = []
+        if self._state_store:
+            load_clean_rules = getattr(self._state_store, "load_clean_rules", None)
+            if load_clean_rules:
+                rules = load_clean_rules(session_id)
+        self._clean_rules[session_id] = [dict(item) for item in rules]
+
+    def _ensure_clean_audit_loaded(self, session_id: str) -> None:
+        if session_id in self._clean_audit_events:
+            return
+        events: list[dict[str, Any]] = []
+        if self._state_store:
+            load_clean_audit_events = getattr(self._state_store, "load_clean_audit_events", None)
+            if load_clean_audit_events:
+                events = load_clean_audit_events(session_id)
+        self._clean_audit_events[session_id] = [dict(item) for item in events]
+
     def _find_action_proposal_locked(self, session_id: str, email_id: str, action: str) -> dict[str, Any] | None:
         for item in self._action_proposals[session_id]:
             if item.get("email_id") == email_id and item.get("action") == action:
@@ -398,6 +525,12 @@ class MemoryStore:
     def _find_action_proposal_by_id_locked(self, session_id: str, proposal_id: str) -> dict[str, Any] | None:
         for item in self._action_proposals[session_id]:
             if item.get("proposal_id") == proposal_id:
+                return item
+        return None
+
+    def _find_clean_rule_locked(self, session_id: str, rule_id: str) -> dict[str, Any] | None:
+        for item in self._clean_rules[session_id]:
+            if item.get("rule_id") == rule_id:
                 return item
         return None
 

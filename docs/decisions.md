@@ -139,6 +139,23 @@ Policy + Memory + User Permission: authorize
 - 约束：category memory、LLM shadow、strict proposal policy 都不能直接授权 `auto_eligible`；LLM 可以继续作为 shadow 或解释信号，但不能授权自动化。
 - 后续：只有真实 clean preview 的误伤风险可接受后，才设计 `automation_policy`、audited execution、scheduler integration 和用户关闭/撤销策略。
 
+## 2026-06-07 - 自然语言偏好先转成可批准 Clean Rule
+
+- 决策：用户不逐封审批邮件，而是通过自然语言表达偏好；系统把偏好转成 `proposed` clean/protect rules，并展示 impact preview，用户批准规则后才影响 cleaner。
+- 理由：逐封审批的真实体验太重；每封邮件都调用 LLM 又慢、贵且难审计。规则授权让高频路径保持确定性、低延迟和可解释，同时保留 LLM/自然语言的交互价值。
+- 约束：`teach` 可以使用 heuristic 或未来 OpenAI parser，但 parser 只能 propose rule，不能 enable rule，不能执行邮箱写操作。
+- 约束：`protect` rule 和 `protected` guard 优先于 `archive` rule；如果规则冲突，保护赢。
+- 当前状态：`cleaner.rules` 支持 sender/domain/keyword/category scope；`cleaner.teach` 支持 proposed rule 创建和只读 impact preview；`clean-preview` 已把 enabled clean rule 作为正式 `auto_eligible` 授权来源，并保留旧 confirmed sender/domain memory 兼容路径。规则和 audit 默认持久化到 `server/data/mailguard_state.db`。
+- 后续：真实环境只读验证后，再设计回滚、scheduler 和更完整的 automation policy。
+
+## 2026-06-07 - Clean execution 使用独立 audit，不复用 proposal audit
+
+- 决策：`clean-run --yes` 执行 `auto_eligible` archive 时写入 clean audit events，而不是创建或复用 `ActionProposal` audit。
+- 理由：proposal audit 表达“用户逐封审批建议动作”；clean audit 表达“用户批准规则后，系统按规则执行自动清理”。两者混用会让责任来源、授权依据和未来 UI 难以解释。
+- 约束：`clean-run` 默认不执行，只展示 approval-required preview；必须显式 `--yes` 才调用 provider archive。
+- 约束：执行范围只来自当前 preview 的 `auto_eligible`，并受 `--max-execute` 限制；`protected`、candidate、no_action 不能执行。
+- 当前状态：已记录 started/succeeded/failed/skipped audit events；尚未实现回滚命令和 scheduler。
+
 ## 2026-05-26 - 文档瘦身
 
 - 决策：主文档收敛为 `project-state.md`、`decisions.md`、`architecture.md`、`testing-and-evaluation.md`、`test-logs/README.md`。

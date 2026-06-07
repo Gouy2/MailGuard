@@ -28,6 +28,9 @@ server/data/real_email_labels.json
 server/data/real_proposal_labels.json
 server/data/memory_proposals.json
 server/data/archive_shadow_results.json
+server/data/*.db
+server/data/*.db-shm
+server/data/*.db-wal
 .mailguard/
 
 # claude

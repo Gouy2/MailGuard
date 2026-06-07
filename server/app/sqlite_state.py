@@ -30,6 +30,8 @@ class SQLiteStateStore:
             "email_scans",
             "email_action_proposals",
             "email_action_audit_events",
+            "email_clean_rules",
+            "email_clean_audit_events",
         )
         with self._lock, self._connection:
             for table in tables:
@@ -247,6 +249,105 @@ class SQLiteStateStore:
                 ),
             )
 
+    def load_clean_rules(self, session_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT rule_json
+                FROM email_clean_rules
+                WHERE session_id = ?
+                ORDER BY created_at, rule_id
+                """,
+                (session_id,),
+            ).fetchall()
+        return [_json_object(row["rule_json"]) for row in rows]
+
+    def save_clean_rule(self, session_id: str, rule: dict[str, Any]) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO email_clean_rules(
+                    session_id,
+                    rule_id,
+                    action,
+                    scope,
+                    value,
+                    status,
+                    rule_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, rule_id) DO UPDATE SET
+                    action = excluded.action,
+                    scope = excluded.scope,
+                    value = excluded.value,
+                    status = excluded.status,
+                    rule_json = excluded.rule_json,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    session_id,
+                    str(rule["rule_id"]),
+                    str(rule["action"]),
+                    str(rule["scope"]),
+                    str(rule["value"]),
+                    str(rule.get("status", "")),
+                    json.dumps(rule, ensure_ascii=False, sort_keys=True),
+                    str(rule.get("created_at", "")),
+                    str(rule.get("updated_at", "")),
+                ),
+            )
+
+    def load_clean_audit_events(self, session_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT event_json
+                FROM email_clean_audit_events
+                WHERE session_id = ?
+                ORDER BY created_at, event_id
+                """,
+                (session_id,),
+            ).fetchall()
+        return [_json_object(row["event_json"]) for row in rows]
+
+    def save_clean_audit_event(self, session_id: str, event: dict[str, Any]) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO email_clean_audit_events(
+                    session_id,
+                    event_id,
+                    run_id,
+                    email_id,
+                    event_type,
+                    actor,
+                    event_json,
+                    created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, event_id) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    email_id = excluded.email_id,
+                    event_type = excluded.event_type,
+                    actor = excluded.actor,
+                    event_json = excluded.event_json,
+                    created_at = excluded.created_at
+                """,
+                (
+                    session_id,
+                    str(event["event_id"]),
+                    str(event.get("run_id", "")),
+                    str(event.get("email_id", "")),
+                    str(event.get("event_type", "")),
+                    str(event.get("actor", "")),
+                    json.dumps(event, ensure_ascii=False, sort_keys=True),
+                    str(event.get("created_at", "")),
+                ),
+            )
+
     def _initialize(self) -> None:
         with self._lock, self._connection:
             self._connection.execute("PRAGMA journal_mode=WAL")
@@ -324,6 +425,38 @@ class SQLiteStateStore:
                 """
             )
             self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS email_clean_rules (
+                    session_id TEXT NOT NULL,
+                    rule_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    rule_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(session_id, rule_id),
+                    UNIQUE(session_id, action, scope, value)
+                )
+                """
+            )
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS email_clean_audit_events (
+                    session_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    email_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    event_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(session_id, event_id)
+                )
+                """
+            )
+            self._connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_email_notifications_session_status ON email_notifications(session_id, status)"
             )
             self._connection.execute(
@@ -334,6 +467,15 @@ class SQLiteStateStore:
             )
             self._connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_email_action_audit_session_proposal ON email_action_audit_events(session_id, proposal_id)"
+            )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_email_clean_rules_session_status ON email_clean_rules(session_id, status)"
+            )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_email_clean_audit_session_run ON email_clean_audit_events(session_id, run_id)"
+            )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_email_clean_audit_session_email ON email_clean_audit_events(session_id, email_id)"
             )
 
     def _save_notification_locked(

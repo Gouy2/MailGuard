@@ -201,6 +201,11 @@ def _print_clean_preview(result: dict[str, Any], out: TextIO, *, show_protected:
         file=out,
     )
     print(
+        f"Clean rules: {result.get('enabled_clean_rule_count', 0)} enabled "
+        f"({result.get('archive_rule_count', 0)} archive, {result.get('protect_rule_count', 0)} protect)",
+        file=out,
+    )
+    print(
         f"Mailbox mutation: {bool(result.get('mailbox_mutation', False))}, "
         f"proposal mutation: {bool(result.get('proposal_mutation', False))}, "
         f"LLM authorization: {bool(result.get('llm_authorization', False))}",
@@ -215,6 +220,117 @@ def _print_clean_preview(result: dict[str, Any], out: TextIO, *, show_protected:
     if show_protected and result.get("protected"):
         print("Protected:", file=out)
         _print_protected_items(result.get("protected", [])[:10], out)
+
+
+def _print_teach(result: dict[str, Any], out: TextIO) -> None:
+    print(f"Parser: {result.get('parser', '')}", file=out)
+    print(f"Rules: {result.get('rule_count', 0)} total, {result.get('created_count', 0)} created", file=out)
+    print(
+        f"Mailbox mutation: {bool(result.get('mailbox_mutation', False))}, "
+        f"rule mutation: {bool(result.get('rule_mutation', False))}, "
+        f"LLM authorization: {bool(result.get('llm_authorization', False))}",
+        file=out,
+    )
+    if result.get("rules"):
+        print("Proposed rules:", file=out)
+        _print_clean_rule_items(result.get("rules", []), out)
+    impact = result.get("impact") or {}
+    rows = impact.get("rules") or []
+    if rows:
+        print(f"Impact preview: fetched {impact.get('fetched', 0)} recent emails", file=out)
+        for item in rows:
+            print(
+                f"- {item.get('rule_id', '')}: matches {item.get('match_count', 0)}, "
+                f"would archive {item.get('would_auto_archive_count', 0)}, "
+                f"would protect {item.get('would_protect_count', 0)}, "
+                f"blocked {item.get('blocked_by_guard_count', 0)}",
+                file=out,
+            )
+            for example in item.get("examples", [])[:3]:
+                print(
+                    f"  * {example.get('email_id', '')} "
+                    f"[{example.get('importance', '')}/{example.get('category', '')}] "
+                    f"{_clip(example.get('subject', ''), 120)}",
+                    file=out,
+                )
+
+
+def _print_clean_rules(result: dict[str, Any], out: TextIO) -> None:
+    status = result.get("status") or "all"
+    print(f"Status: {status}", file=out)
+    print(f"Count: {result.get('count', 0)}", file=out)
+    _print_clean_rule_items(result.get("rules", []), out)
+
+
+def _print_clean_run(result: dict[str, Any], out: TextIO, *, show_protected: bool = False) -> None:
+    _print_clean_preview(result, out, show_protected=show_protected)
+    print(
+        f"Selected: {result.get('selected_count', 0)}, executed: {result.get('executed_count', 0)}, "
+        f"failed: {result.get('failed_count', 0)}, skipped: {result.get('skipped_count', 0)}",
+        file=out,
+    )
+    print(
+        f"Audit mutation: {bool(result.get('audit_mutation', False))}, "
+        f"audit events: {result.get('audit_event_count', 0)}",
+        file=out,
+    )
+    if result.get("approval_hint"):
+        print(result.get("approval_hint", ""), file=out)
+    if result.get("executed"):
+        print("Executed:", file=out)
+        _print_proposal_items(result.get("executed", [])[:10], out)
+    if result.get("failed"):
+        print("Failed:", file=out)
+        _print_proposal_items(result.get("failed", [])[:10], out)
+    if result.get("skipped"):
+        print("Skipped:", file=out)
+        _print_proposal_items(result.get("skipped", [])[:10], out)
+
+
+def _print_clean_audit(result: dict[str, Any], out: TextIO) -> None:
+    print(f"Count: {result.get('count', 0)}", file=out)
+    for index, item in enumerate(result.get("events", []), start=1):
+        print(
+            f"{index}. {item.get('event_id', '')} "
+            f"{item.get('event_type', '')} run={item.get('run_id', '')} "
+            f"email={item.get('email_id', '')} actor={item.get('actor', '')}",
+            file=out,
+        )
+        payload = dict(item.get("payload") or {})
+        if payload.get("clean_rule_match"):
+            rule = payload["clean_rule_match"]
+            print(
+                f"   Rule: {rule.get('action', '')} {rule.get('scope', '')}:{rule.get('value', '')}",
+                file=out,
+            )
+        if payload.get("memory_match"):
+            print(f"   Memory: {payload.get('memory_match', '')}", file=out)
+        if payload.get("error"):
+            print(f"   Error: {_clip(payload.get('error', ''), 180)}", file=out)
+
+
+def _print_clean_rule_decision(command: str, result: dict[str, Any], out: TextIO) -> None:
+    rule = result.get("rule", {})
+    print(f"{command}: {rule.get('rule_id', '')}", file=out)
+    print(f"Status: {rule.get('status', '')}", file=out)
+    print(f"Rule: {rule.get('action', '')} {rule.get('scope', '')}:{rule.get('value', '')}", file=out)
+    print(f"Mailbox mutation: {bool(result.get('mailbox_mutation', False))}", file=out)
+
+
+def _print_clean_rule_items(rules: list[dict[str, Any]], out: TextIO) -> None:
+    for index, rule in enumerate(rules, start=1):
+        status = str(rule.get("status", ""))
+        if "created" in rule:
+            suffix = "created" if rule.get("created") else "existing"
+            status = f"{status}/{suffix}"
+        print(
+            f"{index}. {rule.get('rule_id', '')} "
+            f"[{status}] "
+            f"{rule.get('action', '')} {rule.get('scope', '')}:{rule.get('value', '')}",
+            file=out,
+        )
+        if rule.get("reason"):
+            print(f"   Reason: {_clip(rule.get('reason', ''), 180)}", file=out)
 
 
 def _print_review(result: dict[str, Any], out: TextIO) -> None:
@@ -784,6 +900,14 @@ def _render_clean_preview(args: argparse.Namespace, result: dict[str, Any], out:
     _print_clean_preview(result["result"], out, show_protected=args.show_protected)
 
 
+def _render_clean_run(args: argparse.Namespace, result: dict[str, Any], out: TextIO) -> None:
+    _print_clean_run(result["result"], out, show_protected=args.show_protected)
+
+
+def _render_clean_rule_decision(args: argparse.Namespace, result: dict[str, Any], out: TextIO) -> None:
+    _print_clean_rule_decision(args.display_command, result["result"], out)
+
+
 def _render_review(args: argparse.Namespace, result: dict[str, Any], out: TextIO) -> None:
     payload = result["result"]
     _print_review(payload, out)
@@ -823,6 +947,12 @@ COMMAND_RENDERERS: dict[str, Callable[[argparse.Namespace, dict[str, Any], TextI
     "detail": _render_detail,
     "report": _result_renderer(_print_report),
     "clean-preview": _render_clean_preview,
+    "clean-run": _render_clean_run,
+    "teach": _result_renderer(_print_teach),
+    "rules": _result_renderer(_print_clean_rules),
+    "rule-approve": _render_clean_rule_decision,
+    "rule-disable": _render_clean_rule_decision,
+    "clean-audit": _result_renderer(_print_clean_audit),
     "daily-report": _result_renderer(_print_daily_report),
     "review": _render_review,
     "label": _result_renderer(_print_label),

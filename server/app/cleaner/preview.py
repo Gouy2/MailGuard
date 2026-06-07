@@ -14,6 +14,7 @@ from ..memory import MemoryStore
 from ..memory_proposals import confirmed_memory_from_store, load_memory_proposals
 from ..provider_factory import create_email_provider
 from ..runtime_env import SERVER_ROOT
+from .rules import matching_rules
 from .storage import CleanPreviewStorage
 
 
@@ -53,6 +54,7 @@ def run_clean_preview(
 
     try:
         confirmed_memory = _load_confirmed_memory(memory_path or DEFAULT_MEMORY_PATH)
+        clean_rules = _load_clean_rules(memory_store, session_id)
         emails = _filter_recent(
             email_provider.list_recent(limit=budget["limit"], unread_only=False),
             hours=budget["hours"],
@@ -64,7 +66,7 @@ def run_clean_preview(
             confirmed_memory=confirmed_memory,
             provider_name=type(email_provider).__name__,
         )
-        _fill_plan_result(run, plan, confirmed_memory=confirmed_memory)
+        _fill_plan_result(run, plan, confirmed_memory=confirmed_memory, clean_rules=clean_rules)
         run["status"] = "ok"
     except Exception as exc:
         run["status"] = "error"
@@ -104,24 +106,95 @@ def _base_run(provider: EmailProvider, budget: dict[str, int]) -> dict[str, Any]
         "proposal_mutation": False,
         "audit_mutation": False,
         "llm_authorization": False,
+        "clean_rule_count": 0,
+        "enabled_clean_rule_count": 0,
+        "archive_rule_count": 0,
+        "protect_rule_count": 0,
     }
 
 
-def _fill_plan_result(run: dict[str, Any], plan: Any, *, confirmed_memory: dict[str, Any]) -> None:
+def _fill_plan_result(
+    run: dict[str, Any],
+    plan: Any,
+    *,
+    confirmed_memory: dict[str, Any],
+    clean_rules: list[dict[str, Any]],
+) -> None:
     auto_eligible: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
+    protected: list[dict[str, Any]] = []
+    no_action: list[dict[str, Any]] = []
+    enabled_rules = [dict(rule) for rule in clean_rules if rule.get("status") == "enabled"]
+    archive_rules = [rule for rule in enabled_rules if rule.get("action") == "archive"]
+    protect_rules = [rule for rule in enabled_rules if rule.get("action") == "protect"]
 
     for planned in plan.planned:
         item = planned.to_proposal_dict()
+        protect_rule = _first_rule_match(protect_rules, planned.email, planned.classification)
+        if protect_rule:
+            protected.append(
+                _protected_from_archive_item(
+                    item,
+                    reason="enabled protect rule blocks automatic cleaning",
+                    clean_rule_match=protect_rule,
+                )
+            )
+            continue
+        archive_rule = _first_rule_match(archive_rules, planned.email, planned.classification)
+        if archive_rule:
+            auto_eligible.append(_auto_item(item, clean_rule_match=archive_rule))
+            continue
         memory_match = _archive_memory_match(item.get("from_email", ""), confirmed_memory)
         if memory_match:
             auto_eligible.append(_auto_item(item, memory_match=memory_match))
             continue
         candidates.append(_candidate_from_planned(item))
 
-    candidates.extend(item.to_dict() for item in plan.candidates)
-    protected = [_protected_item(item.to_dict(), confirmed_memory=confirmed_memory) for item in plan.protected]
-    no_action = [item.to_dict() for item in plan.no_action]
+    for item in plan.candidates:
+        protect_rule = _first_rule_match(protect_rules, item.email, item.classification)
+        if protect_rule:
+            protected.append(
+                _protected_from_scan_item(
+                    item,
+                    reason="enabled protect rule blocks automatic cleaning",
+                    clean_rule_match=protect_rule,
+                )
+            )
+            continue
+        archive_rule = _first_rule_match(archive_rules, item.email, item.classification)
+        if archive_rule:
+            auto_eligible.append(_auto_item_from_scan(item, clean_rule_match=archive_rule))
+            continue
+        candidates.append(item.to_dict())
+
+    for item in plan.protected:
+        archive_rule = _first_rule_match(archive_rules, item.email, item.classification)
+        protect_rule = _first_rule_match(protect_rules, item.email, item.classification)
+        protected.append(
+            _protected_item(
+                item.to_dict(),
+                confirmed_memory=confirmed_memory,
+                archive_rule_match=archive_rule,
+                protect_rule_match=protect_rule,
+            )
+        )
+
+    for item in plan.no_action:
+        protect_rule = _first_rule_match(protect_rules, item.email, item.classification)
+        if protect_rule:
+            protected.append(
+                _protected_from_scan_item(
+                    item,
+                    reason="enabled protect rule blocks automatic cleaning",
+                    clean_rule_match=protect_rule,
+                )
+            )
+            continue
+        archive_rule = _first_rule_match(archive_rules, item.email, item.classification)
+        if archive_rule:
+            auto_eligible.append(_auto_item_from_scan(item, clean_rule_match=archive_rule))
+            continue
+        no_action.append(item.to_dict())
 
     run.update(
         {
@@ -135,20 +208,33 @@ def _fill_plan_result(run: dict[str, Any], plan: Any, *, confirmed_memory: dict[
             "protected": protected,
             "candidates": candidates,
             "no_action": no_action,
+            "clean_rule_count": len(clean_rules),
+            "enabled_clean_rule_count": len(enabled_rules),
+            "archive_rule_count": len(archive_rules),
+            "protect_rule_count": len(protect_rules),
         }
     )
 
 
-def _auto_item(item: dict[str, Any], *, memory_match: str) -> dict[str, Any]:
+def _auto_item(
+    item: dict[str, Any],
+    *,
+    memory_match: str = "",
+    clean_rule_match: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     evidence = dict(item.get("evidence") or {})
     policy = dict(evidence.get("policy") or {})
     classification = dict(evidence.get("classification") or {})
+    authority = "clean_rule" if clean_rule_match else "confirmed_memory"
+    policy_reason = policy.get("reason", "")
+    if clean_rule_match:
+        policy_reason = "enabled clean rule authorizes automatic archive"
     return {
         "item_type": "auto_eligible",
         "status": "dry_run",
         "action": item.get("action", "archive"),
         "risk_level": "auto_eligible_low",
-        "source": "confirmed_memory",
+        "source": authority,
         "email_id": item.get("email_id", ""),
         "thread_id": item.get("thread_id", ""),
         "from_name": item.get("from_name", ""),
@@ -159,12 +245,35 @@ def _auto_item(item: dict[str, Any], *, memory_match: str) -> dict[str, Any]:
         "importance": classification.get("importance", ""),
         "suggested_action": classification.get("suggested_action", ""),
         "policy_decision": policy.get("decision", ""),
-        "policy_reason": policy.get("reason", ""),
+        "policy_reason": policy_reason,
         "reason": item.get("reason", ""),
         "memory_match": memory_match,
-        "automation_authority": "confirmed_memory",
+        "clean_rule_match": _rule_match(clean_rule_match),
+        "automation_authority": authority,
         "mailbox_mutation": False,
     }
+
+
+def _auto_item_from_scan(item: Any, *, clean_rule_match: dict[str, Any]) -> dict[str, Any]:
+    data = item.to_dict()
+    return _auto_item(
+        {
+            "action": "archive",
+            "email_id": data.get("email_id", ""),
+            "thread_id": getattr(item.email, "thread_id", ""),
+            "from_name": data.get("from_name", ""),
+            "from_email": data.get("from_email", ""),
+            "subject": data.get("subject", ""),
+            "snippet": getattr(item.email, "snippet", ""),
+            "reason": data.get("reason", data.get("policy_reason", "")),
+            "evidence": {
+                "classification": item.classification.to_evidence_dict(),
+                "email": item.email.to_summary_dict(),
+                "policy": item.policy.to_dict(),
+            },
+        },
+        clean_rule_match=clean_rule_match,
+    )
 
 
 def _candidate_from_planned(item: dict[str, Any]) -> dict[str, Any]:
@@ -175,7 +284,7 @@ def _candidate_from_planned(item: dict[str, Any]) -> dict[str, Any]:
         "item_type": "candidate",
         "action": item.get("action", "archive"),
         "risk_level": "candidate",
-        "source": "policy_without_confirmed_memory",
+        "source": "policy_without_confirmed_rule",
         "email_id": item.get("email_id", ""),
         "thread_id": item.get("thread_id", ""),
         "from_name": item.get("from_name", ""),
@@ -186,22 +295,94 @@ def _candidate_from_planned(item: dict[str, Any]) -> dict[str, Any]:
         "importance": classification.get("importance", ""),
         "suggested_action": classification.get("suggested_action", ""),
         "policy_decision": policy.get("decision", ""),
-        "policy_reason": "not auto-eligible without confirmed sender/domain memory",
+        "policy_reason": "not auto-eligible without enabled clean rule or confirmed sender/domain memory",
         "reason": item.get("reason", ""),
     }
 
 
-def _protected_item(item: dict[str, Any], *, confirmed_memory: dict[str, Any]) -> dict[str, Any]:
+def _protected_from_archive_item(
+    item: dict[str, Any],
+    *,
+    reason: str,
+    clean_rule_match: dict[str, Any],
+) -> dict[str, Any]:
+    protected = _candidate_from_planned(item)
+    protected["item_type"] = "protected"
+    protected["policy_decision"] = "protected"
+    protected["policy_reason"] = reason
+    protected["clean_rule_match"] = _rule_match(clean_rule_match)
+    protected["auto_eligible_blocked"] = True
+    return protected
+
+
+def _protected_from_scan_item(
+    item: Any,
+    *,
+    reason: str,
+    clean_rule_match: dict[str, Any],
+) -> dict[str, Any]:
+    protected = item.to_dict()
+    protected["item_type"] = "protected"
+    protected["policy_decision"] = "protected"
+    protected["policy_reason"] = reason
+    protected["clean_rule_match"] = _rule_match(clean_rule_match)
+    protected["auto_eligible_blocked"] = True
+    return protected
+
+
+def _protected_item(
+    item: dict[str, Any],
+    *,
+    confirmed_memory: dict[str, Any],
+    archive_rule_match: dict[str, Any] | None = None,
+    protect_rule_match: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     protected = dict(item)
     memory_match = _archive_memory_match(protected.get("from_email", ""), confirmed_memory)
     if memory_match:
         protected["memory_match"] = memory_match
         protected["auto_eligible_blocked"] = True
+    if archive_rule_match:
+        protected["clean_rule_match"] = _rule_match(archive_rule_match)
+        protected["auto_eligible_blocked"] = True
+    if protect_rule_match:
+        protected["protect_rule_match"] = _rule_match(protect_rule_match)
     return protected
 
 
 def _load_confirmed_memory(memory_path: str | Path) -> dict[str, Any]:
     return confirmed_memory_from_store(load_memory_proposals(memory_path))
+
+
+def _load_clean_rules(memory_store: MemoryStore | None, session_id: str) -> list[dict[str, Any]]:
+    if memory_store is None:
+        return []
+    try:
+        return memory_store.clean_rules(session_id, limit=0)
+    except AttributeError:
+        return []
+
+
+def _first_rule_match(rules: list[dict[str, Any]], email: Any, classification: Any) -> dict[str, Any] | None:
+    matches = matching_rules(
+        rules,
+        email=email.to_summary_dict(),
+        classification=classification,
+        status="enabled",
+    )
+    return matches[0] if matches else None
+
+
+def _rule_match(rule: dict[str, Any] | None) -> dict[str, Any]:
+    if not rule:
+        return {}
+    return {
+        "rule_id": rule.get("rule_id", ""),
+        "action": rule.get("action", ""),
+        "scope": rule.get("scope", ""),
+        "value": rule.get("value", ""),
+        "source": rule.get("source", ""),
+    }
 
 
 def _archive_memory_match(from_email: str, confirmed_memory: dict[str, Any]) -> str:

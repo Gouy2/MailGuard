@@ -30,6 +30,13 @@ try:
     from app.cli.render import is_success, print_human
     from app.cleaner.preview import run_clean_preview
     from app.cleaner.storage import DEFAULT_CLEAN_PREVIEW_DIR
+    from app.cleaner.teach import (
+        approve_clean_rule,
+        disable_clean_rule,
+        list_clean_rules,
+        run_teach_workflow,
+    )
+    from app.cleaner.run import clean_audit_log, run_clean_execution
     from app.daily_report.runner import run_daily_report
     from app.daily_report.storage import DEFAULT_DAILY_REPORT_DIR
     from app.memory_proposals import (
@@ -67,6 +74,13 @@ except ModuleNotFoundError as exc:  # pragma: no cover - used when imported from
     from server.app.cli.render import is_success, print_human
     from server.app.cleaner.preview import run_clean_preview
     from server.app.cleaner.storage import DEFAULT_CLEAN_PREVIEW_DIR
+    from server.app.cleaner.teach import (
+        approve_clean_rule,
+        disable_clean_rule,
+        list_clean_rules,
+        run_teach_workflow,
+    )
+    from server.app.cleaner.run import clean_audit_log, run_clean_execution
     from server.app.daily_report.runner import run_daily_report
     from server.app.daily_report.storage import DEFAULT_DAILY_REPORT_DIR
     from server.app.memory_proposals import (
@@ -168,6 +182,50 @@ def build_parser() -> argparse.ArgumentParser:
     clean_preview.add_argument("--memory-path", default=str(DEFAULT_MEMORY_PROPOSAL_PATH))
     clean_preview.add_argument("--show-protected", action="store_true", help="Print protected items for policy review.")
     clean_preview.set_defaults(func=_cmd_clean_preview, display_command="clean-preview")
+
+    clean_run = subparsers.add_parser(
+        "clean-run",
+        help="Execute auto-eligible cleaner archive actions only when --yes is passed.",
+    )
+    clean_run.add_argument("--limit", type=int, default=50)
+    clean_run.add_argument("--hours", type=int, default=168)
+    clean_run.add_argument("--max-execute", type=int, default=20)
+    clean_run.add_argument("--out-dir", default=str(DEFAULT_CLEAN_PREVIEW_DIR))
+    clean_run.add_argument("--memory-path", default=str(DEFAULT_MEMORY_PROPOSAL_PATH))
+    clean_run.add_argument("--show-protected", action="store_true", help="Print protected items for policy review.")
+    clean_run.add_argument("--yes", action="store_true", help="Approve and execute auto-eligible archive actions.")
+    clean_run.set_defaults(func=_cmd_clean_run, display_command="clean-run")
+
+    teach = subparsers.add_parser(
+        "teach",
+        help="Convert a natural-language cleaning preference into proposed clean/protect rules. Read-only for mailbox.",
+    )
+    teach.add_argument("instruction", help="Natural-language preference, for example: archive Facebook notifications but keep security mail.")
+    teach.add_argument("--llm", choices=["heuristic", "openai"], default="heuristic")
+    teach.add_argument("--model", default="", help="Optional OpenAI model override when --llm openai is used.")
+    teach.add_argument("--limit", type=int, default=50)
+    teach.add_argument("--hours", type=int, default=720)
+    teach.set_defaults(func=_cmd_teach, display_command="teach")
+
+    rules = subparsers.add_parser("rules", help="List proposed/enabled/disabled clean rules.")
+    rules.add_argument("--status", choices=["", "proposed", "enabled", "disabled"], default="")
+    rules.add_argument("--limit", type=int, default=100)
+    rules.set_defaults(func=_cmd_rules, display_command="rules")
+
+    rule = subparsers.add_parser("rule", help="Approve or disable one clean rule.")
+    rule_subparsers = rule.add_subparsers(dest="rule_command", required=True)
+    rule_approve = rule_subparsers.add_parser("approve", help="Enable one proposed clean rule.")
+    rule_approve.add_argument("rule_id")
+    rule_approve.set_defaults(func=_cmd_rule_approve, display_command="rule-approve")
+    rule_disable = rule_subparsers.add_parser("disable", help="Disable one clean rule.")
+    rule_disable.add_argument("rule_id")
+    rule_disable.set_defaults(func=_cmd_rule_disable, display_command="rule-disable")
+
+    clean_audit = subparsers.add_parser("clean-audit", help="List inbox cleaner audit events.")
+    clean_audit.add_argument("--run-id", default="")
+    clean_audit.add_argument("--email-id", default="")
+    clean_audit.add_argument("--limit", type=int, default=100)
+    clean_audit.set_defaults(func=_cmd_clean_audit, display_command="clean-audit")
 
     daily_report = subparsers.add_parser(
         "daily-report",
@@ -590,6 +648,102 @@ def _cmd_clean_preview(args: argparse.Namespace, runtime: Any) -> dict[str, Any]
         "tool": "email_clean_preview",
         "error": preview.get("error", ""),
         "result": preview,
+    }
+
+
+def _cmd_clean_run(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    memory_store = getattr(runtime, "memory_store", None)
+    if memory_store is None:
+        return {"ok": False, "tool": "email_clean_run", "error": "runtime memory store is unavailable"}
+    preferences = memory_store.email_preferences(args.session_id)
+    result = run_clean_execution(
+        memory_store=memory_store,
+        session_id=args.session_id,
+        preferences=preferences,
+        memory_path=args.memory_path,
+        output_dir=args.out_dir,
+        limit=args.limit,
+        hours=args.hours,
+        max_execute=args.max_execute,
+        execute=args.yes,
+        actor="user" if args.yes else "system",
+    )
+    return {
+        "ok": result.get("status") in {"ok", "partial_error"},
+        "tool": "email_clean_run",
+        "error": result.get("error", ""),
+        "result": result,
+    }
+
+
+def _cmd_teach(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    memory_store = getattr(runtime, "memory_store", None)
+    if memory_store is None:
+        return {"ok": False, "tool": "email_teach_clean_rules", "error": "runtime memory store is unavailable"}
+    result = run_teach_workflow(
+        instruction=args.instruction,
+        memory_store=memory_store,
+        session_id=args.session_id,
+        llm=args.llm,
+        model=args.model,
+        limit=args.limit,
+        hours=args.hours,
+    )
+    return {
+        "ok": bool(result.get("rule_count", 0)),
+        "tool": "email_teach_clean_rules",
+        "error": "" if result.get("rule_count", 0) else "no clean rules could be inferred from the instruction",
+        "result": result,
+    }
+
+
+def _cmd_rules(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    memory_store = getattr(runtime, "memory_store", None)
+    if memory_store is None:
+        return {"ok": False, "tool": "email_clean_rules", "error": "runtime memory store is unavailable"}
+    return {
+        "ok": True,
+        "tool": "email_clean_rules",
+        "result": list_clean_rules(memory_store, args.session_id, status=args.status, limit=args.limit),
+    }
+
+
+def _cmd_rule_approve(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    memory_store = getattr(runtime, "memory_store", None)
+    if memory_store is None:
+        return {"ok": False, "tool": "email_approve_clean_rule", "error": "runtime memory store is unavailable"}
+    return {
+        "ok": True,
+        "tool": "email_approve_clean_rule",
+        "result": approve_clean_rule(memory_store, args.session_id, args.rule_id),
+    }
+
+
+def _cmd_rule_disable(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    memory_store = getattr(runtime, "memory_store", None)
+    if memory_store is None:
+        return {"ok": False, "tool": "email_disable_clean_rule", "error": "runtime memory store is unavailable"}
+    return {
+        "ok": True,
+        "tool": "email_disable_clean_rule",
+        "result": disable_clean_rule(memory_store, args.session_id, args.rule_id),
+    }
+
+
+def _cmd_clean_audit(args: argparse.Namespace, runtime: Any) -> dict[str, Any]:
+    memory_store = getattr(runtime, "memory_store", None)
+    if memory_store is None:
+        return {"ok": False, "tool": "email_clean_audit", "error": "runtime memory store is unavailable"}
+    return {
+        "ok": True,
+        "tool": "email_clean_audit",
+        "result": clean_audit_log(
+            memory_store=memory_store,
+            session_id=args.session_id,
+            run_id=args.run_id,
+            email_id=args.email_id,
+            limit=args.limit,
+        ),
     }
 
 

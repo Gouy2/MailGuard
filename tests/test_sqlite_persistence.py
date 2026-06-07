@@ -16,9 +16,10 @@ from unittest.mock import patch
 from server.agent_cli import AgentHttpClient, run_cli as run_agent_cli
 from server.email_cli import run_cli
 from server.agent_smoke import run_agent_smoke, run_real_pending_write_smoke
-from server.app.agent import _state_db_path
+from server.app.agent import DEFAULT_STATE_DB, _state_db_path
 from server.app.agent import AgentRuntime
 from server.app.auth import configured_auth_token, require_api_token
+from server.app.cleaner.rules import proposed_rule
 from server.app.email_eval import evaluate_email_classifier
 from server.app.email_provider import MockEmailProvider
 from server.app.email_proposals import approve_action_proposal, execute_approved_action_proposals
@@ -197,7 +198,97 @@ class SQLiteMemoryPersistenceTests(unittest.TestCase):
         self.assertEqual(1, len(audit))
         self.assertEqual("proposal_created", audit[0]["event_type"])
 
+    def test_clean_rules_persist_across_memory_store_instances(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "state.db"
+            first_store = SQLiteStateStore(db_path)
+            first = MemoryStore(state_store=first_store)
+            rule = proposed_rule(
+                action="archive",
+                scope="domain",
+                value="facebookmail.com",
+                source="test",
+                reason="social notification cleanup",
+            )
+            first.save_clean_rule("persist", rule)
+            approved = first.approve_clean_rule("persist", rule["rule_id"])
+            first_store.close()
+
+            second_store = SQLiteStateStore(db_path)
+            second = MemoryStore(state_store=second_store)
+            rules = second.clean_rules("persist", status="enabled", limit=0)
+            second_store.close()
+
+        self.assertEqual(1, len(rules))
+        self.assertEqual(approved["rule_id"], rules[0]["rule_id"])
+        self.assertEqual("enabled", rules[0]["status"])
+
+    def test_clean_audit_events_persist_across_memory_store_instances(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "state.db"
+            first_store = SQLiteStateStore(db_path)
+            first = MemoryStore(state_store=first_store)
+            event = first.add_clean_audit_event(
+                "persist",
+                run_id="clean-run-test",
+                email_id="email-001",
+                event_type="clean_execution_succeeded",
+                actor="system",
+                payload={"action": "archive", "email_id": "email-001"},
+            )
+            first_store.close()
+
+            second_store = SQLiteStateStore(db_path)
+            second = MemoryStore(state_store=second_store)
+            events = second.clean_audit_events("persist", run_id="clean-run-test", limit=0)
+            second_store.close()
+
+        self.assertEqual(1, len(events))
+        self.assertEqual(event["event_id"], events[0]["event_id"])
+        self.assertEqual("email-001", events[0]["email_id"])
+
 class SQLiteRuntimePersistenceTests(unittest.TestCase):
+    def test_runtime_factory_uses_default_state_db_when_env_is_unset(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "default-state.db"
+            with patch("server.app.agent.DEFAULT_STATE_DB", str(db_path)):
+                with patch("server.app.agent.load_server_env", lambda: None), patch.dict(os.environ, {}, clear=True):
+                    first = AgentRuntime.create()
+                    try:
+                        add = first.execute_tool_for_test(
+                            "email_add_preference",
+                            {"key": "important_senders", "value": "default@example.com"},
+                            session_id="runtime-default-persist",
+                        )
+                        self.assertTrue(add["ok"])
+                    finally:
+                        first.close()
+
+                    second = AgentRuntime.create()
+                    try:
+                        preferences = second.execute_tool_for_test(
+                            "email_get_preferences",
+                            {},
+                            session_id="runtime-default-persist",
+                        )
+                        self.assertTrue(preferences["ok"])
+                        self.assertEqual(
+                            ["default@example.com"],
+                            preferences["result"]["preferences"]["important_senders"],
+                        )
+                    finally:
+                        second.close()
+
+            self.assertTrue(db_path.exists())
+
+    def test_runtime_factory_can_disable_state_db_with_empty_env(self) -> None:
+        with patch.dict(os.environ, {"MAILGUARD_STATE_DB": ""}):
+            runtime = AgentRuntime.create()
+            try:
+                self.assertIsNone(runtime.memory_store._state_store)
+            finally:
+                runtime.close()
+
     def test_runtime_factory_uses_configured_state_db(self) -> None:
         with TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "runtime-state.db"
@@ -231,3 +322,6 @@ class SQLiteRuntimePersistenceTests(unittest.TestCase):
     def test_state_db_path_accepts_historical_server_prefix(self) -> None:
         resolved = Path(_state_db_path("server/data/mailguard_state.db"))
         self.assertEqual(Path("server/data/mailguard_state.db").resolve(), resolved)
+
+    def test_default_state_db_points_under_server_data(self) -> None:
+        self.assertEqual(Path("server/data/mailguard_state.db").resolve(), Path(_state_db_path(DEFAULT_STATE_DB)))

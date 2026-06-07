@@ -59,6 +59,7 @@ def _safe_json_loads(raw: str) -> dict[str, Any]:
 
 
 READ_ONLY_AGENT_MODE = "agent_readonly"
+DEFAULT_STATE_DB = "data/mailguard_state.db"
 MAILBOX_READ_ONLY_TOOLS = {
     "email_provider_status",
     "email_list_mailboxes",
@@ -81,7 +82,7 @@ class AgentRuntime:
     @classmethod
     def create(cls) -> "AgentRuntime":
         load_server_env()
-        state_db = os.environ.get("MAILGUARD_STATE_DB", "").strip()
+        state_db = _configured_state_db()
         state_store = SQLiteStateStore(_state_db_path(state_db)) if state_db else None
         memory_store = MemoryStore(state_store=state_store)
         tool_registry = build_default_registry(memory_store)
@@ -522,6 +523,13 @@ def _state_db_path(raw_path: str) -> str:
     elif relative.startswith(server_prefix):
         relative = relative[len(server_prefix) :]
     return str((SERVER_ROOT / relative).resolve())
+
+
+def _configured_state_db() -> str:
+    raw = os.environ.get("MAILGUARD_STATE_DB")
+    if raw is None:
+        return DEFAULT_STATE_DB
+    return raw.strip()
 
 
 def _elapsed_ms(started_at: float) -> float:
